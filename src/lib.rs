@@ -6,8 +6,9 @@ use class_group::primitives::cl_dl_public_setup::{
     decrypt, encrypt, eval_scal, eval_sum, CLGroup, Ciphertext, PK, SK,
 };
 use curv::{
+    arithmetic::{Converter, Samplable},
     elliptic::curves::{Point, Scalar, Secp256k1},
-    BigInt, arithmetic::Samplable,
+    BigInt,
 };
 use futures::SinkExt;
 use ni_dkg::{NiDkgMsg, NiDkgOutput};
@@ -16,6 +17,7 @@ use round_based::{
     Delivery, Mpc, MpcParty, Outgoing, PartyIndex, ProtocolMessage,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub mod ni_dkg;
@@ -49,8 +51,8 @@ pub struct PreSignFinalMsg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OnlineSignMsg {
     pub parties: Vec<usize>,
-    pub sig_shares: Vec<BigInt>,
-    pub M_i_j_list: Vec<Point<Secp256k1>>,
+    pub sig_shares: BTreeMap<usize, Scalar<Secp256k1>>,
+    pub M_i_j_list: BTreeMap<usize, Point<Secp256k1>>,
     //    proofs_M_i_j: Vec<Proof2DlPc>
 }
 
@@ -67,14 +69,14 @@ pub struct PreSignature {
 }
 
 pub struct SigECDSA {
-    pub r: BigInt,
-    pub s: BigInt,
+    pub r: Scalar<Secp256k1>,
+    pub s: Scalar<Secp256k1>,
 }
 
 impl MtAwcMsg {
-    // `parties` should include ids of online nodes other than myself
     pub fn new(
         parties: Vec<usize>,
+        myid: usize,
         clgroup: CLGroup,
         clpk: &BTreeMap<usize, PK>,
         k_dkg_output: NiDkgOutput,
@@ -85,6 +87,9 @@ impl MtAwcMsg {
         BTreeMap<usize, Scalar<Secp256k1>>,
         BTreeMap<usize, Scalar<Secp256k1>>,
     ) {
+        // exclude myself from parties
+        let parties: Vec<usize> = parties.into_iter().filter(|j| *j != myid).collect();
+
         let betas: BTreeMap<usize, Scalar<Secp256k1>> = parties
             .iter()
             .map(|j| (*j, Scalar::<Secp256k1>::random()))
@@ -272,7 +277,7 @@ impl PreSignature {
             let delta_j: Scalar<Secp256k1> = presign_final_messages[&j]
                 .delta_shares
                 .iter()
-                .filter(|(&l, _)| honest_parties.clone().contains(&l))
+                .filter(|(&l, _)| *&honest_parties.contains(&l))
                 .map(|(&l, delta_jl)| lagrange_coeff(l, honest_parties.clone()) * delta_jl)
                 .sum();
             delta_j_list.insert(*j, delta_j);
@@ -315,6 +320,109 @@ impl PreSignature {
     }
 }
 
+impl OnlineSignMsg {
+    pub fn new(
+        msg: impl AsRef<[u8]>,
+        parties: Vec<usize>,
+        t: usize,
+        myid: usize,
+        x_dkg_output: NiDkgOutput,
+        presignature: PreSignature,
+    ) -> (Self, Scalar<Secp256k1>) {
+        // get m and r
+        let mut msg_hash = Sha256::new();
+        msg_hash.update(msg);
+        let msg_hash = msg_hash.finalize();
+
+        let m = Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(&msg_hash[..16]));
+        let r = Scalar::<Secp256k1>::from_bigint(&presignature.R.x_coord().unwrap());
+
+        // make shares of m
+        let mut poly_coeffs: Vec<_> = (0..t).map(|_| Scalar::<Secp256k1>::random()).collect();
+        poly_coeffs[0] = m;
+        let mut m_shares = BTreeMap::<usize, Scalar<Secp256k1>>::new();
+
+        for j in parties.iter().chain(std::iter::once(&myid)) {
+            let m_share_j: Scalar<Secp256k1> = poly_coeffs
+                .iter()
+                .enumerate()
+                .map(|(k, a)| {
+                    a * Scalar::<Secp256k1>::from((j + 1).pow((k + 1).try_into().unwrap()) as u64)
+                })
+                .sum();
+            m_shares.insert(*j, m_share_j);
+        }
+
+        // make signature shares
+        let mut sig_shares: BTreeMap<usize, Scalar<Secp256k1>> = parties
+            .iter()
+            .map(|j| {
+                (
+                    *j,
+                    &r * (&presignature.mu_i_j_list[j] + &presignature.nu_j_i_list[j])
+                        + &presignature.k_i * &m_shares[j],
+                )
+            })
+            .collect();
+
+        sig_shares.insert(
+            myid,
+            &r * &presignature.k_i * x_dkg_output.share + &presignature.k_i * &m_shares[&myid],
+        );
+
+        // make M_ij's for verification
+        let M_i_j_list: BTreeMap<usize, Point<Secp256k1>> = parties
+            .iter()
+            .map(|j| (*j, &presignature.R * &presignature.mu_i_j_list[j]))
+            .collect();
+
+        (
+            OnlineSignMsg {
+                parties,
+                sig_shares,
+                M_i_j_list,
+            },
+            r,
+        )
+    }
+}
+
+impl SigECDSA {
+    fn from(
+        parties: Vec<usize>,
+        online_sign_messages: BTreeMap<usize, OnlineSignMsg>,
+        r: Scalar<Secp256k1>,
+    ) -> Self {
+        // parties should include myself, and online sign messages should include my own.
+
+        // first verify the messages and build honest set (todo)
+        let honest_parties = parties;
+
+        // end todo block
+
+        let mut sig_share_j_list = BTreeMap::<usize, Scalar<Secp256k1>>::new();
+
+        // first lagrange interpolation
+        for j in &honest_parties {
+            let sig_share_j: Scalar<Secp256k1> = online_sign_messages[&j]
+                .sig_shares
+                .iter()
+                .filter(|(&l, _)| *&honest_parties.contains(&l))
+                .map(|(&l, sig_share_jl)| lagrange_coeff(l, honest_parties.clone()) * sig_share_jl)
+                .sum();
+            sig_share_j_list.insert(*j, sig_share_j);
+        }
+
+        // second lagrange interpolation
+        let s: Scalar<Secp256k1> = sig_share_j_list
+            .iter()
+            .map(|(&j, sig_share_j)| lagrange_coeff(j, honest_parties.clone()) * sig_share_j)
+            .sum();
+
+        SigECDSA { r, s }
+    }
+}
+
 // below are for testing
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
@@ -323,15 +431,16 @@ pub enum Msg {
     NonceGenMsg(NonceGenMsg),
     MtAwcMsg(MtAwcMsg),
     PreSignFinalMsg(PreSignFinalMsg),
+    OnlineSignMsg(OnlineSignMsg),
 }
 
 #[derive(Debug, Error)]
-pub enum Error<RecvErr, SendErr> {
-    Round1Send(SendErr),
-    Round1Receive(RecvErr),
+pub enum Error<SendErr, RecvErr> {
+    SendError(SendErr),
+    ReceiveError(RecvErr),
 }
 
-pub async fn protocol_dkg_presign<M>(
+pub async fn protocol_dkg_presign_sign<M>(
     party: M,
     myid: PartyIndex,
     t: usize,
@@ -339,7 +448,7 @@ pub async fn protocol_dkg_presign<M>(
     clgroup: CLGroup,
     clpk: BTreeMap<usize, PK>,
     mysk: SK,
-) -> Result<PreSignature, Error<M::ReceiveError, M::SendError>>
+) -> Result<SigECDSA, Error<M::SendError, M::ReceiveError>>
 where
     M: Mpc<ProtocolMessage = Msg>,
 {
@@ -354,6 +463,7 @@ where
     let round1 = rounds.add_round(RoundInput::<NonceGenMsg>::broadcast(myid, n_u16));
     let round2 = rounds.add_round(RoundInput::<MtAwcMsg>::broadcast(myid, n_u16));
     let round3 = rounds.add_round(RoundInput::<PreSignFinalMsg>::broadcast(myid, n_u16));
+    let round4 = rounds.add_round(RoundInput::<OnlineSignMsg>::broadcast(myid, n_u16));
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
@@ -406,7 +516,7 @@ where
         .unzip();
 
     let k_dkg_output = NiDkgOutput::from_combining(
-        parties.clone(),
+        x_dkg_output.parties.clone(),
         &k_dkg_messages,
         myid.into(),
         clgroup.clone(),
@@ -416,7 +526,7 @@ where
     );
 
     let gamma_dkg_output = NiDkgOutput::from_combining(
-        parties.clone(),
+        x_dkg_output.parties.clone(),
         &gamma_dkg_messages,
         myid.into(),
         clgroup.clone(),
@@ -428,6 +538,7 @@ where
     // Step 2: Nonce conversion, or MtAwc
     let (my_mta_msg, betas, nus) = MtAwcMsg::new(
         parties_excl_myself.clone(),
+        myid.into(),
         clgroup.clone(),
         &clpk,
         k_dkg_output.clone(),
@@ -460,7 +571,7 @@ where
         betas,
         nus,
         gamma_dkg_output.clone(),
-        x_dkg_output,
+        x_dkg_output.clone(),
         k_dkg_output.clone().share,
     );
 
@@ -481,7 +592,7 @@ where
 
     // and finally you may follow me; farewell he said
     let presignature = PreSignature::from(
-        parties_excl_myself,
+        parties_excl_myself.clone(),
         mta_messages,
         presign_final_messages,
         mus_to_me,
@@ -490,11 +601,39 @@ where
         k_dkg_output,
     );
 
-    Ok(presignature)
+    // Step 4: Online Signing
+    let (my_online_sign_msg, r) = OnlineSignMsg::new(
+        "test",
+        parties_excl_myself,
+        t,
+        myid.into(),
+        x_dkg_output,
+        presignature,
+    );
+
+    outgoing
+        .send(Outgoing::broadcast(Msg::OnlineSignMsg(
+            my_online_sign_msg.clone(),
+        )))
+        .await
+        .unwrap();
+
+    let mut online_sign_messages: BTreeMap<usize, OnlineSignMsg> = rounds
+        .complete(round4)
+        .await
+        .unwrap()
+        .into_iter_indexed()
+        .map(|(j, _, msg)| (j.into(), msg))
+        .collect();
+    online_sign_messages.insert(myid.into(), my_online_sign_msg);
+
+    let signature = SigECDSA::from(parties, online_sign_messages, r);
+
+    Ok(signature)
 }
 
 #[tokio::test]
-async fn test_dkg_presign() {
+async fn test_dkg_presign_sign() {
     let n: u16 = 3;
     let t: usize = 3;
 
@@ -514,7 +653,8 @@ async fn test_dkg_presign() {
     for i in 0..n {
         let party = simulation.add_party();
         let mysk = clsk[&(i as usize)].clone();
-        let output = protocol_dkg_presign(party, i, t, n.into(), clgroup.clone(), clpk.clone(), mysk);
+        let output =
+            protocol_dkg_presign_sign(party, i, t, n.into(), clgroup.clone(), clpk.clone(), mysk);
         party_output.push(output);
     }
 
