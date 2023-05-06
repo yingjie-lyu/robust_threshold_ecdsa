@@ -1,4 +1,5 @@
 #![allow(nonstandard_style)]
+#![allow(unused_imports)]
 
 use std::collections::BTreeMap;
 
@@ -274,10 +275,10 @@ impl PreSignature {
 
         // the first lagrange interpolation
         for j in &honest_parties {
-            let delta_j: Scalar<Secp256k1> = presign_final_messages[&j]
+            let delta_j: Scalar<Secp256k1> = presign_final_messages[j]
                 .delta_shares
                 .iter()
-                .filter(|(&l, _)| *&honest_parties.contains(&l))
+                .filter(|(&l, _)| honest_parties.contains(&l))
                 .map(|(&l, delta_jl)| lagrange_coeff(l, honest_parties.clone()) * delta_jl)
                 .sum();
             delta_j_list.insert(*j, delta_j);
@@ -308,7 +309,7 @@ impl PreSignature {
         }
 
         PreSignature {
-            parties: honest_parties.clone(),
+            parties: honest_parties,
             R,
             k_i: k_dkg_output.share,
             mu_i_j_list: mus_to_me,
@@ -404,10 +405,10 @@ impl SigECDSA {
 
         // first lagrange interpolation
         for j in &honest_parties {
-            let sig_share_j: Scalar<Secp256k1> = online_sign_messages[&j]
+            let sig_share_j: Scalar<Secp256k1> = online_sign_messages[j]
                 .sig_shares
                 .iter()
-                .filter(|(&l, _)| *&honest_parties.contains(&l))
+                .filter(|(&l, _)| honest_parties.contains(&l))
                 .map(|(&l, sig_share_jl)| lagrange_coeff(l, honest_parties.clone()) * sig_share_jl)
                 .sum();
             sig_share_j_list.insert(*j, sig_share_j);
