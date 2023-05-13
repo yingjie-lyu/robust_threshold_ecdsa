@@ -6,8 +6,9 @@ use class_group::{
 };
 use curv::{
     arithmetic::{BasicOps, Converter, Samplable},
+    cryptographic_primitives::hashing::merkle_tree::Proof,
     elliptic::curves::{Point, Scalar, Secp256k1},
-    BigInt, cryptographic_primitives::hashing::merkle_tree::Proof,
+    BigInt,
 };
 use futures::SinkExt;
 use round_based::{
@@ -19,6 +20,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::ops::{Add, Mul};
 use thiserror::Error;
+
+use crate::lagrange_coeff;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NiDkgMsg {
@@ -48,7 +51,7 @@ pub struct NiDkgOutput {
 }
 
 impl NiDkgMsg {
-    pub fn new(t: usize, parties: Vec<usize>, clgroup: CLGroup, clpk: BTreeMap<usize, PK>) -> Self {
+    pub fn new(t: usize, parties: Vec<usize>, clgroup: &CLGroup, clpk: &BTreeMap<usize, PK>) -> Self {
         // make coefficients of a (t-1)-degree polynomial, and derive the shares
         let coeffs: Vec<_> = (0..t).map(|_| Scalar::<Secp256k1>::random()).collect();
 
@@ -73,7 +76,7 @@ impl NiDkgMsg {
             .map(|(j, share)| {
                 (
                     *j,
-                    encrypt_predefined_randomness(&clgroup, &clpk[&j], share, &r).c2,
+                    encrypt_predefined_randomness(clgroup, &clpk[j], share, &r).c2,
                 )
             })
             .collect();
@@ -84,8 +87,8 @@ impl NiDkgMsg {
             .collect();
 
         let proof = ProofCorrectSharing::prove(
-            &clgroup,
-            &clpk,
+            clgroup,
+            clpk,
             &shares,
             &poly_coeff_cmt,
             &r,
@@ -183,7 +186,7 @@ impl ProofCorrectSharing {
         clgroup: &CLGroup,
         clpk: &BTreeMap<usize, PK>,
         shares: &BTreeMap<usize, Scalar<Secp256k1>>,
-        poly_coeff_cmt: &Vec<Point<Secp256k1>>,
+        poly_coeff_cmt: &[Point<Secp256k1>],
         r: &SK,
         rand_cmt: &BinaryQF,
         encrypted_shares: &BTreeMap<usize, BinaryQF>,
@@ -196,10 +199,10 @@ impl ProofCorrectSharing {
 
         // challenge 1
         let gamma = ProofCorrectSharing::challenge_gamma(
-            &clpk,
-            &rand_cmt,
-            &encrypted_shares,
-            &poly_coeff_cmt,
+            clpk,
+            rand_cmt,
+            encrypted_shares,
+            poly_coeff_cmt,
         );
 
         // the Y in proof is rather expensive
@@ -209,7 +212,7 @@ impl ProofCorrectSharing {
             .reduce(|prod, pk| prod.compose(&pk).reduce())
             .unwrap();
 
-        let Y = encrypt_predefined_randomness(&clgroup, &PK(temp_pk), &alpha, &rho).c2;
+        let Y = encrypt_predefined_randomness(clgroup, &PK(temp_pk), &alpha, &rho).c2;
 
         let gamma_prime = ProofCorrectSharing::challenge_gamma_prime(&gamma, &W, &X, &Y);
 
@@ -230,15 +233,53 @@ impl ProofCorrectSharing {
     }
 
     pub fn verify(msg: &NiDkgMsg, clgroup: &CLGroup, clpk: &BTreeMap<usize, PK>) -> bool {
-        let gamma = ProofCorrectSharing::challenge_gamma(&clpk, &msg.rand_cmt, &msg.encrypted_shares, &msg.poly_coeff_cmt);
-        let gamma_prime = ProofCorrectSharing::challenge_gamma_prime(&gamma, &msg.proof.W, &msg.proof.X, &msg.proof.Y);
+        let gamma = ProofCorrectSharing::challenge_gamma(
+            clpk,
+            &msg.rand_cmt,
+            &msg.encrypted_shares,
+            &msg.poly_coeff_cmt,
+        );
+        let gamma_prime = ProofCorrectSharing::challenge_gamma_prime(
+            &gamma,
+            &msg.proof.W,
+            &msg.proof.X,
+            &msg.proof.Y,
+        );
 
         // check equation 1
-        if &msg.proof.W.compose(&msg.rand_cmt.exp(&gamma_prime)).reduce() != &clgroup.gq.exp(&msg.proof.z_r) {return false;}
+        if msg
+            .proof
+            .W
+            .compose(&msg.rand_cmt.exp(&gamma_prime))
+            .reduce()
+            != clgroup.gq.exp(&msg.proof.z_r)
+        {
+            return false;
+        }
 
         // check equation 2
-        let eq2in: Point<Secp256k1> = msg.poly_coeff_cmt.iter().enumerate().map(|(k, A)| A * &msg.parties.iter().map(|j| j+1).map(|j| BigInt::from(j.pow(k.try_into().unwrap()) as u64) * gamma.pow(j.try_into().unwrap())).map(|exp| Scalar::<Secp256k1>::from_bigint(&exp)).sum()).sum();
-        if &msg.proof.X + eq2in * Scalar::<Secp256k1>::from_bigint(&gamma_prime) != Point::<Secp256k1>::generator() * &msg.proof.z_s {return false;}
+        let eq2in: Point<Secp256k1> = msg
+            .poly_coeff_cmt
+            .iter()
+            .enumerate()
+            .map(|(k, A)| {
+                A * &msg
+                    .parties
+                    .iter()
+                    .map(|j| j + 1)
+                    .map(|j| {
+                        BigInt::from(j.pow(k.try_into().unwrap()) as u64)
+                            * gamma.pow(j.try_into().unwrap())
+                    })
+                    .map(|exp| Scalar::<Secp256k1>::from_bigint(&exp))
+                    .sum()
+            })
+            .sum();
+        if &msg.proof.X + eq2in * Scalar::<Secp256k1>::from_bigint(&gamma_prime)
+            != Point::<Secp256k1>::generator() * &msg.proof.z_s
+        {
+            return false;
+        }
 
         // check equation 3
         let temp_pk = clpk
@@ -246,10 +287,23 @@ impl ProofCorrectSharing {
             .map(|(j, pk)| pk.0.exp(&gamma.pow((j + 1).try_into().unwrap())).reduce())
             .reduce(|prod, pk| prod.compose(&pk).reduce())
             .unwrap();
-        let eq3rhs = encrypt_predefined_randomness(clgroup, &PK(temp_pk), &msg.proof.z_s, &SK(msg.proof.z_r.clone())).c2;
-        let eq3in = msg.parties.iter().map(|&j| msg.encrypted_shares[&j].exp(&gamma.pow((j+1).try_into().unwrap()))).reduce(|prod, item| prod.compose(&item).reduce()).unwrap();
-        if msg.proof.Y.compose(&eq3in.exp(&gamma_prime)).reduce() != eq3rhs {return false;}
-        
+        let eq3rhs = encrypt_predefined_randomness(
+            clgroup,
+            &PK(temp_pk),
+            &msg.proof.z_s,
+            &SK(msg.proof.z_r.clone()),
+        )
+        .c2;
+        let eq3in = msg
+            .parties
+            .iter()
+            .map(|&j| msg.encrypted_shares[&j].exp(&gamma.pow((j + 1).try_into().unwrap())))
+            .reduce(|prod, item| prod.compose(&item).reduce())
+            .unwrap();
+        if msg.proof.Y.compose(&eq3in.exp(&gamma_prime)).reduce() != eq3rhs {
+            return false;
+        }
+
         // all checks passed
         true
     }
@@ -258,7 +312,7 @@ impl ProofCorrectSharing {
         clpk: &BTreeMap<usize, PK>,
         rand_cmt: &BinaryQF,
         encrypted_shares: &BTreeMap<usize, BinaryQF>,
-        poly_coeff_cmt: &Vec<Point<Secp256k1>>,
+        poly_coeff_cmt: &[Point<Secp256k1>],
     ) -> BigInt {
         let mut gamma_hash = Sha256::new();
         clpk.iter()
@@ -321,7 +375,7 @@ where
     ));
     let mut rounds = rounds.listen(incoming);
 
-    let my_ni_dkg_msg = NiDkgMsg::new(t, (0..n).collect(), clgroup.clone(), clpk.clone());
+    let my_ni_dkg_msg = NiDkgMsg::new(t, (0..n).collect(), &clgroup, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -351,9 +405,10 @@ pub enum Error<RecvErr, SendErr> {
     Round1Receive(RecvErr),
 }
 
+
 #[tokio::test]
 async fn test_cl_keygen_overhead() {
-    let n: u16 = 5;
+    let n: u16 = 3;
 
     let clgroup = CLGroup::new_from_setup(&1600, &BigInt::strict_sample(1500));
 
@@ -367,10 +422,11 @@ async fn test_cl_keygen_overhead() {
     }
 }
 
+
 #[tokio::test]
 async fn test_ni_dkg() {
     let n: u16 = 3;
-    let t: usize = 3;
+    let t: usize = 2;
 
     let mut simulation = Simulation::<Msg>::new();
     let mut party_output = vec![];
