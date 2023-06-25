@@ -5,8 +5,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
-round-based = { path = "../round-based-protocol-2/round-based", features = ["derive", "dev"] }
-class_group = { path = "../class" }
+round-based = { git = "https://github.com/ZenGo-X/round-based-protocol.git", branch = "round-based2", features = ["derive", "dev"] }
+class_group = { git = "https://github.com/yingjie-lyu/class.git" }
 curv-kzen = { version = "0.10", default-features = false }
 ecdsa = "0.16.6"
 tokio = { version = "1.15", features = ["rt", "macros"] }
