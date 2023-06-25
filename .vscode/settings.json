@@ -1,6 +1,0 @@
-{
-    "git.ignoreLimitWarning": true,
-    "rust-analyzer.linkedProjects": [
-        "./Cargo.toml"
-    ]
-}
