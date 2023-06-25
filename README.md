@@ -1,6 +1,6 @@
 # Round-Optimal[^1] Robust Threshold ECDSA
 
-A Thesis Project at Shandong University.
+A thesis project at Shandong University.
 
 Warning: the source code is research-grade and should not be used in production!
 
