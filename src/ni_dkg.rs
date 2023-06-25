@@ -281,7 +281,7 @@ impl ProofCorrectSharing {
             return false;
         }
 
-        // check equation 3
+        //check equation 3
         let temp_pk = clpk
             .iter()
             .map(|(j, pk)| pk.0.exp(&gamma.pow((j + 1).try_into().unwrap())).reduce())
@@ -297,7 +297,7 @@ impl ProofCorrectSharing {
         let eq3in = msg
             .parties
             .iter()
-            .map(|&j| msg.encrypted_shares[&j].exp(&gamma.pow((j + 1).try_into().unwrap())))
+            .map(|&j| msg.encrypted_shares[&j].exp(&gamma.pow((j + 1).try_into().unwrap())).reduce())
             .reduce(|prod, item| prod.compose(&item).reduce())
             .unwrap();
         if msg.proof.Y.compose(&eq3in.exp(&gamma_prime)).reduce() != eq3rhs {
@@ -408,7 +408,7 @@ pub enum Error<RecvErr, SendErr> {
 
 #[tokio::test]
 async fn test_cl_keygen_overhead() {
-    let n: u16 = 3;
+    let n: u16 = 6;
 
     let clgroup = CLGroup::new_from_setup(&1600, &BigInt::strict_sample(1500));
 
