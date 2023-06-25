@@ -280,14 +280,16 @@ impl PreSignature {
         k_dkg_output: NiDkgOutput,
     ) -> Self {
         // first do PreSignFinal (Share Revelation) step check and build honest set
+
+        let mut honest_parties = Vec::<usize>::new();
+
         for j in parties.iter().filter(|&j| *j != myid) {
-            let flag = presign_final_messages[j].proof_D_i.verify(
+            let flag1: bool = presign_final_messages[j].proof_D_i.verify(
                 &Gamma,
                 &presign_final_messages[j].D_i,
                 &Point::<Secp256k1>::generator(),
                 &k_dkg_output.shares_cmt[j],
             );
-            assert!(flag); // ok
 
             let delta_j: Scalar<Secp256k1> = presign_final_messages[j]
                 .delta_shares
@@ -305,11 +307,12 @@ impl PreSignature {
                 })
                 .sum();
             
-            let flag: bool = (Point::<Secp256k1>::generator() * delta_j) + eq_inside == presign_final_messages[j].D_i;
-            assert!(flag); // ok
-        }
+            let flag2: bool = (Point::<Secp256k1>::generator() * delta_j) + eq_inside == presign_final_messages[j].D_i;
 
-        let mut honest_parties = parties;
+            if flag1 && flag2 {
+                honest_parties.push(*j);
+            }
+        }
 
         // with the honest parties, now reconstruct the delta
         let mut delta_j_list = BTreeMap::<usize, Scalar<Secp256k1>>::new();
@@ -466,14 +469,14 @@ impl SignatureECDSA {
     ) -> Self {
         // parties should include myself, and online sign messages should include my own.
 
-        // first verify the messages and build honest set (todo)
+        // first verify the messages and build honest set
         let mut honest_parties = vec![];
 
         for j in parties.iter().filter(|&l| *l != myid) {
             let mut _flag = false;
             // todo: check all nizks
 
-            let is_proof_ok = online_sign_messages[j]
+            let is_proof_ok: bool = online_sign_messages[j]
                 .proofs_M_i_j
                 .iter()
                 .all(|(l, proof)| {
@@ -487,7 +490,7 @@ impl SignatureECDSA {
                         &presignature.N_j_l_list[&(*j, *l)],
                     )
                 });
-            assert!(is_proof_ok); // ok
+
             let j_parties: Vec<usize> = online_sign_messages[j]
                 .parties
                 .clone()
@@ -501,7 +504,6 @@ impl SignatureECDSA {
                 .map(|(&l, sig_share_jl)| lagrange_coeff(l, j_parties.clone()) * sig_share_jl)
                 .sum();
 
-            // check eq
             let eq_inside: Point<Secp256k1> = parties
                 .iter()
                 .filter(|&l| l != j)
@@ -512,10 +514,10 @@ impl SignatureECDSA {
                 })
                 .sum();
 
-            if (&presignature.R * sig_share_j) + (eq_inside * &r)
-                == (&m * &presignature.R_j_list[j]) + (&r * &x_dkg_output.shares_cmt[j])
-            {
-                _flag = true;
+            let flag: bool = (&presignature.R * sig_share_j) + (eq_inside * &r)
+                == (&m * &presignature.R_j_list[j]) + (&r * &x_dkg_output.shares_cmt[j]);
+
+            if is_proof_ok && flag {
                 honest_parties.push(*j);
             }
         }
