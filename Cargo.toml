@@ -9,7 +9,7 @@ round-based = { git = "https://github.com/ZenGo-X/round-based-protocol.git", bra
 class_group = { git = "https://github.com/yingjie-lyu/class.git" }
 curv-kzen = { version = "0.10", default-features = false }
 ecdsa = "0.16.6"
-tokio = { version = "1.15", features = ["rt", "macros"] }
+tokio = { version = "1.15", features = ["full"] }
 futures = "0.3"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }

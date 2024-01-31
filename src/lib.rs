@@ -458,7 +458,7 @@ impl OnlineSignMsg {
 }
 
 impl SignatureECDSA {
-    fn from(
+    pub fn from(
         parties: Vec<usize>,
         myid: usize,
         online_sign_messages: BTreeMap<usize, OnlineSignMsg>,
@@ -545,6 +545,32 @@ impl SignatureECDSA {
             .sum();
 
         SignatureECDSA { r, s }
+    }
+
+    pub fn verify(
+        &self,
+        pk: &Point<Secp256k1>,
+        msg: &String
+    ) -> bool {
+        let g = Point::<Secp256k1>::generator().to_point();
+
+        let msg_hash = Sha256::digest(msg.as_bytes());
+        let m = Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(&msg_hash[..16]));
+
+        if let Some(s_invert) = self.s.invert() {
+            let result = (g * m + pk * &self.r) * s_invert;
+            if let Some(result_x) = result.x_coord() {
+                return self.r.to_bigint() == result_x;
+            }
+        }
+
+        false
+    }
+}
+
+impl std::fmt::Display for SignatureECDSA {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{\n\tr = {},\n\ts = {}\n}}", self.r.to_bigint(), self.s.to_bigint())
     }
 }
 
