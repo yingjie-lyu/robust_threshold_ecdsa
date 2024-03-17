@@ -154,9 +154,10 @@ namespace BICYCL
         int kronecker (const Mpz &) const;
 
         void to_bytes(std::vector<unsigned char> &dst) const {
-            size_t size = (mpz_sizeinbase(mpz_, 2) + 7) / 8;
+            auto bit_size = sizeof(unsigned char) * 8;
+            size_t size = (mpz_sizeinbase(mpz_, 2) + bit_size - 1) / bit_size;
             dst.resize(size);
-            mpz_export(dst.data(), NULL, 1, 1, 0, 0, mpz_);
+            mpz_export(dst.data(), NULL, 1, bit_size, 0, 0, mpz_);
         }
 
         bool is_equal(const Mpz & other) const {
@@ -258,6 +259,10 @@ namespace BICYCL
         RandGen (const RandGen &);
         RandGen (const Mpz &);
         ~RandGen ();
+
+        RandGen copy() const {
+            return RandGen(*this);
+        }
 
         void set_seed (const Mpz &);
 
@@ -4577,6 +4582,10 @@ namespace BICYCL
             Mpz to_mpz() const {
                 return Mpz(*this);
             }
+
+            SecretKey copy() const {
+                return SecretKey(*this);
+            }
         };
         class PublicKey
         {
@@ -4607,6 +4616,29 @@ namespace BICYCL
                         pk_d_precomp_ = pk_de_precomp_;
                     C.Cl_G().nudupl (pk_de_precomp_, pk_de_precomp_);
                 }
+            }
+
+            PublicKey (const CL_HSMqk &C, const QFI &pk) : pk_(pk) {
+                d_ = (C.encrypt_randomness_bound().nbits () + 1)/2;
+                e_ = d_/2 + 1;
+
+                pk_de_precomp_ = pk_;
+                for (size_t i = 0; i < d_+e_; i++)
+                {
+                    if (i == e_)
+                        pk_e_precomp_ = pk_de_precomp_;
+                    if (i == d_)
+                        pk_d_precomp_ = pk_de_precomp_;
+                    C.Cl_G().nudupl (pk_de_precomp_, pk_de_precomp_);
+                }
+            }
+
+            PublicKey copy() const {
+                return PublicKey(*this);
+            }
+
+            int add(int a, int b) {
+                return a + b;
             }
 
             const QFI & elt () const {
@@ -4822,6 +4854,11 @@ namespace BICYCL
          */
         CL_HSMqk (size_t q_nbits, size_t k, SecLevel seclevel,
                   RandGen &randgen, const Mpz &fud_factor, bool compact_variant);
+
+        inline static CL_HSMqk copy_from(const CL_HSMqk &C) {
+            return CL_HSMqk(C);
+        }
+
         /**@}*/
 
         /**

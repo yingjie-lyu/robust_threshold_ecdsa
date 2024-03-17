@@ -1,10 +1,8 @@
 use std::{
     collections::BTreeMap, io,
 };
-use class_group::primitives::cl_dl_public_setup::{CLGroup, PK, SK};
+use bicycl::{CL_HSMqk, Mpz, PublicKey, RandGen, SecretKey};
 use curv::{
-    arithmetic::Samplable,
-    BigInt,
     elliptic::curves::{Secp256k1, Point},
 };
 use futures::SinkExt;
@@ -18,6 +16,8 @@ use round_based::{
     Delivery, Mpc, MpcParty, Outgoing, PartyIndex,
 };
 
+mod tests;
+
 #[tokio::main]
 async fn main() {
     let n: u16 = 3;
@@ -25,10 +25,15 @@ async fn main() {
 
     let mut simulation = Simulation::<Msg>::new();
     let mut party_output = vec![];
-    let clgroup = CLGroup::new_from_setup(&1600, &BigInt::strict_sample(1500));
 
-    let mut clsk = BTreeMap::<usize, SK>::new();
-    let mut clpk = BTreeMap::<usize, PK>::new();
+    let seed = Mpz::from(chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
+    let mut rand_gen = RandGen::new();
+    rand_gen.set_seed(&seed);
+
+    let clgroup = CL_HSMqk::with_qnbits_rand_gen(50, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
+
+    let mut clsk = BTreeMap::<usize, SecretKey>::new();
+    let mut clpk = BTreeMap::<usize, PublicKey>::new();
 
     println!("Please enter a message to be signed:");
     let mut message = String::new();
@@ -37,7 +42,8 @@ async fn main() {
     message = message.trim().to_string();
 
     for i in 0..n {
-        let (sk_i, pk_i) = clgroup.keygen();
+        let sk_i = clgroup.secret_key_gen(&mut rand_gen);
+        let pk_i = clgroup.public_key_gen(&sk_i);
         // clgroup.gq
         clsk.insert(i.into(), sk_i);
         clpk.insert(i.into(), pk_i);
@@ -46,8 +52,12 @@ async fn main() {
     for i in 0..n {
         let party = simulation.add_party();
         let mysk = clsk[&(i as usize)].clone();
+
+        let mut rand = RandGen::new();
+        rand.set_seed(&rand_gen.random_mpz(&clgroup.encrypt_randomness_bound()));
+
         let output =
-            protocol_dkg_presign_sign(message.clone(), party, i, t, n.into(), clgroup.clone(), clpk.clone(), mysk);
+            protocol_dkg_presign_sign(message.clone(), party, i, t, n.into(), clgroup.clone(), rand, clpk.clone(), mysk);
         party_output.push(output);
     }
 
@@ -74,9 +84,10 @@ pub async fn protocol_dkg_presign_sign<M>(
     myid: PartyIndex,
     t: usize,
     n: usize,
-    clgroup: CLGroup,
-    clpk: BTreeMap<usize, PK>,
-    mysk: SK,
+    clgroup: CL_HSMqk,
+    mut rand_gen: RandGen,
+    clpk: BTreeMap<usize, PublicKey>,
+    mysk: SecretKey,
 ) -> Result<(SignatureECDSA, Point<Secp256k1>), Error<M::SendError, M::ReceiveError>>
     where
         M: Mpc<ProtocolMessage=Msg>,
@@ -96,7 +107,7 @@ pub async fn protocol_dkg_presign_sign<M>(
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
-    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk);
+    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -114,6 +125,7 @@ pub async fn protocol_dkg_presign_sign<M>(
         &x_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         false,
         clpk.clone(),
         &mysk,
@@ -121,8 +133,8 @@ pub async fn protocol_dkg_presign_sign<M>(
 
     // Step 1: Generation of nonces k and gamma
     let my_nonce_gen_msg = NonceGenMsg {
-        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk),
-        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk),
+        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
     };
 
     outgoing
@@ -149,6 +161,7 @@ pub async fn protocol_dkg_presign_sign<M>(
         &k_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         true,
         clpk.clone(),
         &mysk,
@@ -159,6 +172,7 @@ pub async fn protocol_dkg_presign_sign<M>(
         &gamma_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         false,
         clpk.clone(),
         &mysk,
@@ -169,6 +183,7 @@ pub async fn protocol_dkg_presign_sign<M>(
         parties_excl_myself.clone(),
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         &clpk,
         k_dkg_output.clone(),
         gamma_dkg_output.clone().share,
@@ -198,6 +213,7 @@ pub async fn protocol_dkg_presign_sign<M>(
         myid.into(),
         mta_messages.clone(),
         clgroup.clone(),
+        &mut rand_gen,
         mysk,
         betas,
         nus,

@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Formatter};
 use std::iter::Sum;
-use std::ops::Mul;
+use std::ops::{Add, Mul};
 use autocxx::prelude::*;
 include_cpp! {
     #include "bicycl.h"
@@ -16,9 +16,11 @@ include_cpp! {
     generate!("BICYCL::CL_HSMqk_PublicKey")
     generate!("BICYCL::CL_HSMqk_CipherText")
     generate!("BICYCL::CL_HSMqk_ClearText")
+    generate!("BICYCL::ClassGroup")
 }
 
 use std::pin::Pin;
+use std::ptr;
 use crate::ffi::BICYCL;
 use autocxx::{c_long, c_ulong};
 use autocxx::moveit::new::by;
@@ -58,10 +60,10 @@ impl Mul for Mpz {
     }
 }
 
-impl<'a> Mul<Mpz> for &'a Mpz {
+impl<'a> Mul<&'a Mpz> for Mpz {
     type Output = Mpz;
 
-    fn mul(self, rhs: Mpz) -> Mpz {
+    fn mul(self, rhs: &'a Mpz) -> Mpz {
         let mut r = BICYCL::Mpz::new().within_box();
         BICYCL::Mpz::mul(r.as_mut(), &*self.mpz, &*rhs.mpz);
         Mpz {
@@ -77,6 +79,30 @@ impl Sum for Mpz {
             let temp = BICYCL::Mpz::copy_from(&*result).within_box();
             BICYCL::Mpz::add(result.as_mut(), &*temp, &*item.mpz);
         }
+        Mpz {
+            mpz: result
+        }
+    }
+}
+
+impl Add for Mpz {
+    type Output = Mpz;
+
+    fn add(self, rhs: Mpz) -> Mpz {
+        let mut result = BICYCL::Mpz::new().within_box();
+        BICYCL::Mpz::add(result.as_mut(), &*self.mpz, &*rhs.mpz);
+        Mpz {
+            mpz: result
+        }
+    }
+}
+
+impl<'a> Add<Mpz> for &'a Mpz {
+    type Output = Mpz;
+
+    fn add(self, rhs: Mpz) -> Mpz {
+        let mut result = BICYCL::Mpz::new().within_box();
+        BICYCL::Mpz::add(result.as_mut(), &*self.mpz, &*rhs.mpz);
         Mpz {
             mpz: result
         }
@@ -142,8 +168,51 @@ impl Mpz {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct SerializableMpz {
+    bytes: Vec<u8>,
+}
+
+impl From<&BICYCL::Mpz> for SerializableMpz {
+    fn from(mpz: &BICYCL::Mpz) -> Self {
+        let mut vec = cxx::CxxVector::<u8>::new();
+        mpz.to_bytes(vec.pin_mut());
+
+        SerializableMpz {
+            bytes: vec.as_slice().to_vec(),
+        }
+    }
+}
+
+impl Serialize for Mpz {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        let se_mpz = SerializableMpz::from(&*self.mpz);
+
+        se_mpz.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Mpz {
+
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: Deserializer<'de> {
+        let se_mpz = SerializableMpz::deserialize(deserializer)?;
+
+        Ok(Mpz {
+            mpz: Mpz::bicycl_mpz_with_vec(&se_mpz.bytes)
+        })
+    }
+}
+
 pub struct RandGen {
     rand_gen: Pin<Box<BICYCL::RandGen>>,
+}
+
+impl Clone for RandGen {
+    fn clone(&self) -> Self {
+        RandGen {
+            rand_gen: self.rand_gen.copy().within_box()
+        }
+    }
 }
 
 impl RandGen {
@@ -183,6 +252,31 @@ impl QFI {
         Mpz {
             mpz: BICYCL::Mpz::copy_from(self.qfi.c()).within_box(),
         }
+    }
+
+    pub fn compose(&self, c: &CL_HSMqk, qf2: &QFI) -> Self {
+        let mut result = BICYCL::QFI::new().within_box();
+        c.c.Cl_G().nucomp(result.as_mut(), &*self.qfi, &*qf2.qfi);
+        QFI {
+            qfi: result
+        }
+    }
+
+    pub fn exp(&self, c: &CL_HSMqk, n: &Mpz) -> Self {
+        let mut result = BICYCL::QFI::new().within_box();
+        c.c.Cl_G().nupow(result.as_mut(), &*self.qfi, &*n.mpz);
+        QFI {
+            qfi: result
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut a_vec = self.a().to_bytes();
+        let b_vec = self.b().to_bytes();
+        let c_vec = self.c().to_bytes();
+        a_vec.extend_from_slice(&b_vec[..]);
+        a_vec.extend_from_slice(&c_vec[..]);
+        a_vec
     }
 }
 
@@ -261,6 +355,14 @@ pub struct CL_HSMqk {
     c: Pin<Box<BICYCL::CL_HSMqk>>,
 }
 
+impl Clone for CL_HSMqk {
+    fn clone(&self) -> Self {
+        CL_HSMqk {
+            c: BICYCL::CL_HSMqk::copy_from(&*self.c).within_box()
+        }
+    }
+}
+
 impl CL_HSMqk {
     pub fn new(q: &Mpz, k: usize, p: &Mpz, fud_factor: &Mpz, compact_variant: bool) -> Self {
         CL_HSMqk {
@@ -336,6 +438,12 @@ impl CL_HSMqk {
         }
     }
 
+    pub fn scal_ciphertexts(&self, pk: &PublicKey, c: &CipherText, s: &Mpz, rand_gen: &mut RandGen) -> CipherText {
+        CipherText {
+            ct: self.c.scal_ciphertexts(&*pk.pk, &*c.ct, &*s.mpz, rand_gen.rand_gen.as_mut()).within_box(),
+        }
+    }
+
     pub fn encrypt_randomness_bound(&self) -> Mpz {
         Mpz {
             mpz: BICYCL::Mpz::copy_from(self.c.encrypt_randomness_bound()).within_box(),
@@ -355,11 +463,33 @@ impl SecretKey {
     }
 }
 
+impl Clone for SecretKey {
+    fn clone(&self) -> Self {
+        SecretKey {
+            sk: self.sk.copy().within_box()
+        }
+    }
+}
+
 pub struct PublicKey {
     pk: Pin<Box<BICYCL::CL_HSMqk_PublicKey>>,
 }
 
+impl Clone for PublicKey {
+    fn clone(&self) -> Self {
+        PublicKey {
+            pk: self.pk.copy().within_box()
+        }
+    }
+}
+
 impl PublicKey {
+    pub fn from_qfi(c: &CL_HSMqk, qfi: &QFI) -> Self {
+        PublicKey {
+            pk: BICYCL::CL_HSMqk_PublicKey::new1(&*c.c, &*qfi.qfi).within_box(),
+        }
+    }
+
     pub fn elt(&self) -> QFI {
         QFI {
             qfi: BICYCL::QFI::copy_from(self.pk.elt()).within_box(),
@@ -367,13 +497,15 @@ impl PublicKey {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let qfi = self.elt();
-        let mut a_vec = qfi.a().to_bytes();
-        let b_vec = qfi.b().to_bytes();
-        let c_vec = qfi.c().to_bytes();
-        a_vec.extend_from_slice(&b_vec[..]);
-        a_vec.extend_from_slice(&c_vec[..]);
-        a_vec
+        self.elt().to_bytes()
+    }
+
+    pub fn exponentiation(&self, c: &CL_HSMqk, n: &Mpz) -> QFI {
+        let mut r = BICYCL::QFI::new().within_box();
+        self.pk.exponentiation(&*c.c, r.as_mut(), &*n.mpz);
+        QFI {
+            qfi: r
+        }
     }
 }
 
@@ -441,6 +573,10 @@ impl CipherText {
             qfi: BICYCL::QFI::copy_from(self.ct.c2()).within_box()
         }
     }
+}
+
+// TODO: @wangshuchao `*const u8` cannot be sent between threads safely
+unsafe impl Send for CipherText {
 }
 
 impl Clone for CipherText {

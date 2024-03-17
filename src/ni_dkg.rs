@@ -1,9 +1,4 @@
-use class_group::{
-    primitives::cl_dl_public_setup::{
-        decrypt, encrypt_predefined_randomness, eval_sum, CLGroup, Ciphertext, PK, SK,
-    },
-    BinaryQF,
-};
+use bicycl::{QFI, CipherText, PublicKey, SecretKey, CL_HSMqk, Mpz, RandGen, ClearText};
 use curv::{
     arithmetic::{BasicOps, Converter, Samplable},
     cryptographic_primitives::hashing::merkle_tree::Proof,
@@ -26,18 +21,18 @@ use crate::lagrange_coeff;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NiDkgMsg {
     parties: Vec<usize>,
-    rand_cmt: BinaryQF,
-    encrypted_shares: BTreeMap<usize, BinaryQF>,
+    rand_cmt: QFI,
+    encrypted_shares: BTreeMap<usize, QFI>,
     poly_coeff_cmt: Vec<Point<Secp256k1>>,
     proof: ProofCorrectSharing,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProofCorrectSharing {
-    W: BinaryQF,
+    W: QFI,
     X: Point<Secp256k1>,
-    Y: BinaryQF,
-    z_r: BigInt,
+    Y: QFI,
+    z_r: Mpz,
     z_s: Scalar<Secp256k1>,
 }
 
@@ -47,11 +42,11 @@ pub struct NiDkgOutput {
     pub share: Scalar<Secp256k1>,
     pub pk: Point<Secp256k1>,
     pub shares_cmt: BTreeMap<usize, Point<Secp256k1>>,
-    pub encrypted_shares: Option<BTreeMap<usize, Ciphertext>>,
+    pub encrypted_shares: Option<BTreeMap<usize, CipherText>>,
 }
 
 impl NiDkgMsg {
-    pub fn new(t: usize, parties: Vec<usize>, clgroup: &CLGroup, clpk: &BTreeMap<usize, PK>) -> Self {
+    pub fn new(t: usize, parties: Vec<usize>, clgroup: &CL_HSMqk, rand_gen: &mut RandGen, clpk: &BTreeMap<usize, PublicKey>) -> Self {
         // make coefficients of a (t-1)-degree polynomial, and derive the shares
         let coeffs: Vec<_> = (0..t).map(|_| Scalar::<Secp256k1>::random()).collect();
 
@@ -68,15 +63,17 @@ impl NiDkgMsg {
             shares.insert(*j, s_j);
         }
 
-        let (r, R) = clgroup.keygen();
-        let rand_cmt = R.0;
+        let r = clgroup.secret_key_gen(rand_gen);
+        let R = clgroup.public_key_gen(&r);
+        let rand_cmt = R.elt();
 
-        let encrypted_shares: BTreeMap<usize, BinaryQF> = shares
+        let encrypted_shares: BTreeMap<usize, QFI> = shares
             .iter()
             .map(|(j, share)| {
+                let share_mpz = Mpz::from_bytes(share.to_bigint().to_bytes().as_slice());
                 (
                     *j,
-                    encrypt_predefined_randomness(clgroup, &clpk[j], share, &r).c2,
+                    clgroup.encrypt_with_r(&clpk[j], &ClearText::with_mpz(clgroup, &share_mpz), &r.mpz()).c2(),
                 )
             })
             .collect();
@@ -88,6 +85,7 @@ impl NiDkgMsg {
 
         let proof = ProofCorrectSharing::prove(
             clgroup,
+            rand_gen,
             clpk,
             &shares,
             &poly_coeff_cmt,
@@ -110,10 +108,11 @@ impl NiDkgOutput {
         parties: Vec<usize>,
         messages: &[NiDkgMsg],
         myid: usize,
-        clgroup: CLGroup,
+        clgroup: CL_HSMqk,
+        rand_gen: &mut RandGen,
         want_encrypted_shares: bool,
-        clpk: BTreeMap<usize, PK>,
-        mysk: &SK,
+        clpk: BTreeMap<usize, PublicKey>,
+        mysk: &SecretKey,
     ) -> Self {
         let honest_parties: Vec<usize> = parties
             .into_iter()
@@ -125,15 +124,10 @@ impl NiDkgOutput {
         let mut X_j_list = BTreeMap::<usize, Point<Secp256k1>>::new();
 
         for &j in &honest_parties {
-            x_i = x_i
-                + decrypt(
-                    &clgroup,
-                    mysk,
-                    &Ciphertext {
-                        c1: messages[j].rand_cmt.clone(),
-                        c2: messages[j].encrypted_shares[&myid].clone(),
-                    },
-                );
+            let ct = CipherText::new(&messages[j].rand_cmt, &messages[j].encrypted_shares[&myid]);
+            let pt = clgroup.decrypt(mysk, &ct);
+            x_i = x_i + Scalar::<Secp256k1>::from_bytes(pt.mpz().to_bytes().as_slice()).unwrap();
+
             X = X + &messages[j].poly_coeff_cmt[0];
 
             // additively make the committed shares
@@ -151,18 +145,15 @@ impl NiDkgOutput {
             }
         }
 
-        let mut c_j_list = BTreeMap::<usize, Ciphertext>::new();
+        let mut c_j_list = BTreeMap::<usize, CipherText>::new();
 
         // combine ciphertexts of shares which is expensive and therefore optional
         if want_encrypted_shares {
             for j in &honest_parties {
                 let c_j = honest_parties
                     .iter()
-                    .map(|&l| Ciphertext {
-                        c1: messages[l].rand_cmt.clone(),
-                        c2: messages[l].encrypted_shares[j].clone(),
-                    })
-                    .reduce(|sum, ct| eval_sum(&sum, &ct))
+                    .map(|&l| CipherText::new(&messages[l].rand_cmt, &messages[l].encrypted_shares[j]))
+                    .reduce(|sum, ct| clgroup.add_ciphertexts(&clpk[j], &sum, &ct, rand_gen))
                     .unwrap();
                 c_j_list.insert(*j, c_j.clone());
             }
@@ -183,16 +174,18 @@ impl NiDkgOutput {
 
 impl ProofCorrectSharing {
     pub fn prove(
-        clgroup: &CLGroup,
-        clpk: &BTreeMap<usize, PK>,
+        clgroup: &CL_HSMqk,
+        rand_gen: &mut RandGen,
+        clpk: &BTreeMap<usize, PublicKey>,
         shares: &BTreeMap<usize, Scalar<Secp256k1>>,
         poly_coeff_cmt: &[Point<Secp256k1>],
-        r: &SK,
-        rand_cmt: &BinaryQF,
-        encrypted_shares: &BTreeMap<usize, BinaryQF>,
+        r: &SecretKey,
+        rand_cmt: &QFI,
+        encrypted_shares: &BTreeMap<usize, QFI>,
     ) -> ProofCorrectSharing {
-        let (rho, W) = clgroup.keygen();
-        let W = W.0;
+        let rho = clgroup.secret_key_gen(rand_gen);
+        let W = clgroup.public_key_gen(&r);
+        let W = W.elt();
 
         let alpha = Scalar::<Secp256k1>::random();
         let X = &alpha * Point::<Secp256k1>::generator();
@@ -208,31 +201,31 @@ impl ProofCorrectSharing {
         // the Y in proof is rather expensive
         let temp_pk = clpk
             .iter()
-            .map(|(j, pk)| pk.0.exp(&gamma.pow((j + 1).try_into().unwrap())).reduce())
-            .reduce(|prod, pk| prod.compose(&pk).reduce())
+            .map(|(j, pk)| pk.exponentiation(clgroup, &gamma.pow((j + 1) as u64)))
+            .reduce(|prod, pk| prod.compose(clgroup, &pk))
             .unwrap();
 
-        let Y = encrypt_predefined_randomness(clgroup, &PK(temp_pk), &alpha, &rho).c2;
+        let pk = PublicKey::from_qfi(clgroup, &temp_pk);
+        let alpha_mpz = Mpz::from_bytes(alpha.to_bigint().to_bytes().as_slice());
+        let Y = clgroup.encrypt_with_r(&pk, &ClearText::with_mpz(clgroup, &alpha_mpz), &rho.mpz()).c2();
 
         let gamma_prime = ProofCorrectSharing::challenge_gamma_prime(&gamma, &W, &X, &Y);
 
-        let z_r = &r.0 * &gamma_prime + &rho.0;
+        let z_r = r.mpz() * &gamma_prime + rho.mpz();
 
         let z_s = shares
             .iter()
             .map(|(j, s)| {
-                s.mul(Scalar::<Secp256k1>::from_bigint(
-                    &gamma.pow((j + 1).try_into().unwrap()),
-                ))
+                s.mul(Scalar::<Secp256k1>::from_bytes(&gamma.pow((j + 1) as u64).to_bytes()).unwrap())
             })
             .sum::<Scalar<Secp256k1>>()
-            .mul(Scalar::<Secp256k1>::from_bigint(&gamma_prime))
+            .mul(Scalar::<Secp256k1>::from_bytes(&gamma_prime.to_bytes()).unwrap())
             .add(&alpha);
 
         ProofCorrectSharing { W, X, Y, z_r, z_s }
     }
 
-    pub fn verify(msg: &NiDkgMsg, clgroup: &CLGroup, clpk: &BTreeMap<usize, PK>) -> bool {
+    pub fn verify(msg: &NiDkgMsg, clgroup: &CL_HSMqk, clpk: &BTreeMap<usize, PublicKey>) -> bool {
         let gamma = ProofCorrectSharing::challenge_gamma(
             clpk,
             &msg.rand_cmt,
@@ -250,9 +243,8 @@ impl ProofCorrectSharing {
         if msg
             .proof
             .W
-            .compose(&msg.rand_cmt.exp(&gamma_prime))
-            .reduce()
-            != clgroup.gq.exp(&msg.proof.z_r)
+            .compose(&clgroup, &msg.rand_cmt.exp(&clgroup, &gamma_prime))
+            != clgroup.power_of_h(&msg.proof.z_r)
         {
             return false;
         }
@@ -269,13 +261,13 @@ impl ProofCorrectSharing {
                     .map(|j| j + 1)
                     .map(|j| {
                         BigInt::from(j.pow(k.try_into().unwrap()) as u64)
-                            * gamma.pow(j.try_into().unwrap())
+                            * BigInt::from_bytes(gamma.pow(j as u64).to_bytes().as_slice())
                     })
                     .map(|exp| Scalar::<Secp256k1>::from_bigint(&exp))
                     .sum()
             })
             .sum();
-        if &msg.proof.X + eq2in * Scalar::<Secp256k1>::from_bigint(&gamma_prime)
+        if &msg.proof.X + eq2in * Scalar::<Secp256k1>::from_bytes(&gamma_prime.to_bytes()).unwrap()
             != Point::<Secp256k1>::generator() * &msg.proof.z_s
         {
             return false;
@@ -284,23 +276,22 @@ impl ProofCorrectSharing {
         //check equation 3
         let temp_pk = clpk
             .iter()
-            .map(|(j, pk)| pk.0.exp(&gamma.pow((j + 1).try_into().unwrap())).reduce())
-            .reduce(|prod, pk| prod.compose(&pk).reduce())
+            .map(|(j, pk)| pk.exponentiation(clgroup, &gamma.pow((j + 1) as u64)))
+            .reduce(|prod, pk| prod.compose(clgroup, &pk))
             .unwrap();
-        let eq3rhs = encrypt_predefined_randomness(
-            clgroup,
-            &PK(temp_pk),
-            &msg.proof.z_s,
-            &SK(msg.proof.z_r.clone()),
-        )
-        .c2;
+
+        let pk = PublicKey::from_qfi(clgroup, &temp_pk);
+        let msg_mpz = Mpz::from_bytes(msg.proof.z_s.to_bigint().to_bytes().as_slice());
+        let eq3rhs = clgroup.encrypt_with_r(&pk, &ClearText::with_mpz(clgroup, &msg_mpz), &msg.proof.z_r).c2();
+
+
         let eq3in = msg
             .parties
             .iter()
-            .map(|&j| msg.encrypted_shares[&j].exp(&gamma.pow((j + 1).try_into().unwrap())).reduce())
-            .reduce(|prod, item| prod.compose(&item).reduce())
+            .map(|&j| msg.encrypted_shares[&j].exp(clgroup, &gamma.pow((j + 1).try_into().unwrap())))
+            .reduce(|prod, item| prod.compose(clgroup, &item))
             .unwrap();
-        if msg.proof.Y.compose(&eq3in.exp(&gamma_prime)).reduce() != eq3rhs {
+        if msg.proof.Y.compose(clgroup, &eq3in.exp(clgroup, &gamma_prime)) != eq3rhs {
             return false;
         }
 
@@ -309,14 +300,14 @@ impl ProofCorrectSharing {
     }
 
     pub fn challenge_gamma(
-        clpk: &BTreeMap<usize, PK>,
-        rand_cmt: &BinaryQF,
-        encrypted_shares: &BTreeMap<usize, BinaryQF>,
+        clpk: &BTreeMap<usize, PublicKey>,
+        rand_cmt: &QFI,
+        encrypted_shares: &BTreeMap<usize, QFI>,
         poly_coeff_cmt: &[Point<Secp256k1>],
-    ) -> BigInt {
+    ) -> Mpz {
         let mut gamma_hash = Sha256::new();
         clpk.iter()
-            .for_each(|(_, pk)| gamma_hash.update(pk.0.to_bytes()));
+            .for_each(|(_, pk)| gamma_hash.update(pk.to_bytes()));
         gamma_hash.update(rand_cmt.to_bytes());
         encrypted_shares
             .iter()
@@ -327,15 +318,15 @@ impl ProofCorrectSharing {
 
         let gamma_hash = gamma_hash.finalize();
 
-        BigInt::from_bytes(&gamma_hash[..16])
+        Mpz::from_bytes(&gamma_hash[..16])
     }
 
     pub fn challenge_gamma_prime(
-        gamma: &BigInt,
-        W: &BinaryQF,
+        gamma: &Mpz,
+        W: &QFI,
         X: &Point<Secp256k1>,
-        Y: &BinaryQF,
-    ) -> BigInt {
+        Y: &QFI,
+    ) -> Mpz {
         let mut gamma_prime_hash = Sha256::new();
         gamma_prime_hash.update(gamma.to_bytes());
         gamma_prime_hash.update(W.to_bytes());
@@ -343,7 +334,7 @@ impl ProofCorrectSharing {
         gamma_prime_hash.update(Y.to_bytes());
         let gamma_prime_hash = gamma_prime_hash.finalize();
 
-        BigInt::from_bytes(&gamma_prime_hash[..16])
+        Mpz::from_bytes(&gamma_prime_hash[..16])
     }
 }
 
@@ -359,9 +350,10 @@ pub async fn protocol_ni_dkg<M>(
     myid: PartyIndex,
     t: usize,
     n: usize,
-    clgroup: CLGroup,
-    clpk: BTreeMap<usize, PK>,
-    mysk: SK,
+    clgroup: CL_HSMqk,
+    mut rand_gen: RandGen,
+    clpk: BTreeMap<usize, PublicKey>,
+    mysk: SecretKey,
 ) -> Result<NiDkgOutput, Error<M::ReceiveError, M::SendError>>
 where
     M: Mpc<ProtocolMessage = Msg>,
@@ -375,7 +367,7 @@ where
     ));
     let mut rounds = rounds.listen(incoming);
 
-    let my_ni_dkg_msg = NiDkgMsg::new(t, (0..n).collect(), &clgroup, &clpk);
+    let my_ni_dkg_msg = NiDkgMsg::new(t, (0..n).collect(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -393,6 +385,7 @@ where
         &all_messages,
         myid.into(),
         clgroup,
+        &mut rand_gen,
         false,
         clpk,
         &mysk,
@@ -410,13 +403,18 @@ pub enum Error<RecvErr, SendErr> {
 async fn test_cl_keygen_overhead() {
     let n: u16 = 6;
 
-    let clgroup = CLGroup::new_from_setup(&1600, &BigInt::strict_sample(1500));
+    let seed = Mpz::from(chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
+    let mut rand_gen = RandGen::new();
+    rand_gen.set_seed(&seed);
 
-    let mut clsk = BTreeMap::<usize, SK>::new();
-    let mut clpk = BTreeMap::<usize, PK>::new();
+    let clgroup = CL_HSMqk::with_qnbits_rand_gen(50, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
+
+    let mut clsk = BTreeMap::<usize, SecretKey>::new();
+    let mut clpk = BTreeMap::<usize, PublicKey>::new();
 
     for i in 0..n {
-        let (sk_i, pk_i) = clgroup.keygen();
+        let sk_i = clgroup.secret_key_gen(&mut rand_gen);
+        let pk_i = clgroup.public_key_gen(&sk_i);
         clsk.insert(i.into(), sk_i);
         clpk.insert(i.into(), pk_i);
     }
@@ -430,13 +428,19 @@ async fn test_ni_dkg() {
 
     let mut simulation = Simulation::<Msg>::new();
     let mut party_output = vec![];
-    let clgroup = CLGroup::new_from_setup(&1600, &BigInt::strict_sample(1500));
 
-    let mut clsk = BTreeMap::<usize, SK>::new();
-    let mut clpk = BTreeMap::<usize, PK>::new();
+    let seed = Mpz::from(chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
+    let mut rand_gen = RandGen::new();
+    rand_gen.set_seed(&seed);
+
+    let clgroup = CL_HSMqk::with_qnbits_rand_gen(50, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
+
+    let mut clsk = BTreeMap::<usize, SecretKey>::new();
+    let mut clpk = BTreeMap::<usize, PublicKey>::new();
 
     for i in 0..n {
-        let (sk_i, pk_i) = clgroup.keygen();
+        let sk_i = clgroup.secret_key_gen(&mut rand_gen);
+        let pk_i = clgroup.public_key_gen(&sk_i);
         clsk.insert(i.into(), sk_i);
         clpk.insert(i.into(), pk_i);
     }
@@ -444,7 +448,11 @@ async fn test_ni_dkg() {
     for i in 0..n {
         let party = simulation.add_party();
         let mysk = clsk[&(i as usize)].clone();
-        let output = protocol_ni_dkg(party, i, t, n.into(), clgroup.clone(), clpk.clone(), mysk);
+
+        let mut rand = RandGen::new();
+        rand.set_seed(&rand_gen.random_mpz(&clgroup.encrypt_randomness_bound()));
+
+        let output = protocol_ni_dkg(party, i, t, n.into(), clgroup.clone(), rand, clpk.clone(), mysk);
         party_output.push(output);
     }
 

@@ -2,10 +2,7 @@
 #![allow(unused_imports)]
 
 use std::collections::BTreeMap;
-
-use class_group::primitives::cl_dl_public_setup::{
-    decrypt, encrypt, eval_scal, eval_sum, CLGroup, Ciphertext, PK, SK,
-};
+use bicycl::{CipherText, CL_HSMqk, ClearText, Mpz, PublicKey, RandGen, SecretKey};
 use curv::{
     arithmetic::{Converter, Samplable},
     elliptic::curves::{Point, Scalar, Secp256k1},
@@ -36,8 +33,8 @@ pub struct NonceGenMsg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MtAwcMsg {
     pub parties: Vec<usize>,
-    pub encrypted_alphas: BTreeMap<usize, Ciphertext>,
-    pub encrypted_mus: BTreeMap<usize, Ciphertext>,
+    pub encrypted_alphas: BTreeMap<usize, CipherText>,
+    pub encrypted_mus: BTreeMap<usize, CipherText>,
     pub betas_cmt: BTreeMap<usize, Point<Secp256k1>>,
     pub nus_cmt: BTreeMap<usize, Point<Secp256k1>>,
 }
@@ -79,8 +76,9 @@ impl MtAwcMsg {
     pub fn new(
         parties: Vec<usize>,
         myid: usize,
-        clgroup: CLGroup,
-        clpk: &BTreeMap<usize, PK>,
+        clgroup: CL_HSMqk,
+        rand_gen: &mut RandGen,
+        clpk: &BTreeMap<usize, PublicKey>,
         k_dkg_output: NiDkgOutput,
         gamma_share: Scalar<Secp256k1>,
         x_share: Scalar<Secp256k1>,
@@ -113,33 +111,37 @@ impl MtAwcMsg {
             .collect();
 
         let encrypted_ks = k_dkg_output.encrypted_shares.clone().unwrap();
-        let encrypted_alphas: BTreeMap<usize, Ciphertext> = betas
+        let encrypted_alphas: BTreeMap<usize, CipherText> = betas
             .iter()
             .map(|(j, beta)| {
+                let beta_mpz = Mpz::from_bytes(beta.to_bigint().to_bytes().as_slice());
+                let pt = ClearText::with_mpz(&clgroup, &beta_mpz);
+                let gamma_share_mpz = Mpz::from_bytes(gamma_share.to_bigint().to_bytes().as_slice());
                 (
                     *j,
-                    eval_sum(
-                        &encrypt(&clgroup, &clpk[j], &-beta).0,
-                        &eval_scal(
-                            &encrypted_ks[j],
-                            &gamma_share.to_bigint(),
-                        ),
-                    ),
+                    clgroup.add_ciphertexts(
+                        &clpk[j],
+                        &clgroup.encrypt(&clpk[j], &pt, rand_gen),
+                        &clgroup.scal_ciphertexts(&clpk[j], &encrypted_ks[j], &gamma_share_mpz, rand_gen),
+                        rand_gen
+                    )
                 )
             })
             .collect();
 
-        let encrypted_mus: BTreeMap<usize, Ciphertext> = nus
+        let encrypted_mus: BTreeMap<usize, CipherText> = nus
             .iter()
             .map(|(j, nu)| {
+                let nu_mpz = Mpz::from_bytes(nu.to_bigint().to_bytes().as_slice());
+                let nu_pt = ClearText::with_mpz(&clgroup, &nu_mpz);
+                let x_share_mpz = Mpz::from_bytes(x_share.to_bigint().to_bytes().as_slice());
                 (
                     *j,
-                    eval_sum(
-                        &encrypt(&clgroup, &clpk[j], &-nu).0,
-                        &eval_scal(
-                            &encrypted_ks[j],
-                            &x_share.to_bigint(),
-                        ),
+                    clgroup.add_ciphertexts(
+                        &clpk[j],
+                        &clgroup.encrypt(&clpk[j], &nu_pt, rand_gen),
+                        &clgroup.scal_ciphertexts(&clpk[j], &encrypted_ks[j], &x_share_mpz, rand_gen),
+                        rand_gen
                     ),
                 )
             })
@@ -165,8 +167,9 @@ impl PreSignFinalMsg {
         t: usize,
         myid: usize,
         mta_messages: BTreeMap<usize, MtAwcMsg>,
-        clgroup: CLGroup,
-        myclsk: SK,
+        clgroup: CL_HSMqk,
+        rand_gen: &mut RandGen,
+        myclsk: SecretKey,
         betas: BTreeMap<usize, Scalar<Secp256k1>>,
         nus: BTreeMap<usize, Scalar<Secp256k1>>,
         gamma_dkg_output: NiDkgOutput,
@@ -182,13 +185,25 @@ impl PreSignFinalMsg {
         let alphas_to_me: BTreeMap<usize, Scalar<Secp256k1>> = mta_messages
             .iter()
             .filter(|(&j, _)| j != myid)
-            .map(|(&j, msg)| (j, decrypt(&clgroup, &myclsk, &msg.encrypted_alphas[&myid])))
+            .map(|(&j, msg)| {
+                let pt = clgroup.decrypt(&myclsk, &msg.encrypted_alphas[&myid]);
+                (
+                    j,
+                    Scalar::<Secp256k1>::from_bytes(pt.mpz().to_bytes().as_slice()).unwrap()
+                )
+            })
             .collect();
 
         let mus_to_me: BTreeMap<usize, Scalar<Secp256k1>> = mta_messages
             .iter()
             .filter(|(&j, _)| j != myid)
-            .map(|(&j, msg)| (j, decrypt(&clgroup, &myclsk, &msg.encrypted_mus[&myid])))
+            .map(|(&j, msg)| {
+                let pt = clgroup.decrypt(&myclsk, &msg.encrypted_mus[&myid]);
+                (
+                    j,
+                    Scalar::<Secp256k1>::from_bytes(pt.mpz().to_bytes().as_slice()).unwrap()
+                )
+            })
             .collect();
 
         // do MtA step check and build honest set
@@ -306,7 +321,7 @@ impl PreSignature {
                         * (&mta_messages[l].betas_cmt[j] - &mta_messages[j].betas_cmt[l])
                 })
                 .sum();
-            
+
             let flag2: bool = (Point::<Secp256k1>::generator() * delta_j) + eq_inside == presign_final_messages[j].D_i;
 
             if flag1 && flag2 {

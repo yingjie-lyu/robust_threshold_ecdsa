@@ -1,8 +1,4 @@
 use std::collections::BTreeMap;
-
-use class_group::primitives::cl_dl_public_setup::{
-    decrypt, encrypt, eval_scal, eval_sum, CLGroup, Ciphertext, PK, SK,
-};
 use curv::{
     arithmetic::{Converter, Samplable},
     elliptic::curves::{Point, Scalar, Secp256k1},
@@ -40,9 +36,10 @@ pub async fn protocol_dkg_presign_sign<M>(
     myid: PartyIndex,
     t: usize,
     n: usize,
-    clgroup: CLGroup,
-    clpk: BTreeMap<usize, PK>,
-    mysk: SK,
+    clgroup: CL_HSMqk,
+    mut rand_gen: RandGen,
+    clpk: BTreeMap<usize, PublicKey>,
+    mysk: SecretKey,
 ) -> Result<SignatureECDSA, Error<M::SendError, M::ReceiveError>>
 where
     M: Mpc<ProtocolMessage = Msg>,
@@ -62,7 +59,7 @@ where
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
-    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk);
+    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -80,6 +77,7 @@ where
         &x_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         false,
         clpk.clone(),
         &mysk,
@@ -87,8 +85,8 @@ where
 
     // Step 1: Generation of nonces k and gamma
     let my_nonce_gen_msg = NonceGenMsg {
-        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk),
-        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk),
+        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
     };
 
     outgoing
@@ -115,6 +113,7 @@ where
         &k_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         true,
         clpk.clone(),
         &mysk,
@@ -125,6 +124,7 @@ where
         &gamma_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         false,
         clpk.clone(),
         &mysk,
@@ -135,6 +135,7 @@ where
         parties_excl_myself.clone(),
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         &clpk,
         k_dkg_output.clone(),
         gamma_dkg_output.clone().share,
@@ -164,6 +165,7 @@ where
         myid.into(),
         mta_messages.clone(),
         clgroup.clone(),
+        &mut rand_gen,
         mysk,
         betas,
         nus,
@@ -247,13 +249,19 @@ async fn test_dkg_presign_sign() {
 
     let mut simulation = Simulation::<Msg>::new();
     let mut party_output = vec![];
-    let clgroup = CLGroup::new_from_setup(&1600, &BigInt::strict_sample(1500));
 
-    let mut clsk = BTreeMap::<usize, SK>::new();
-    let mut clpk = BTreeMap::<usize, PK>::new();
+    let seed = Mpz::from(chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
+    let mut rand_gen = RandGen::new();
+    rand_gen.set_seed(&seed);
+
+    let clgroup = CL_HSMqk::with_qnbits_rand_gen(50, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
+
+    let mut clsk = BTreeMap::<usize, SecretKey>::new();
+    let mut clpk = BTreeMap::<usize, PublicKey>::new();
 
     for i in 0..n {
-        let (sk_i, pk_i) = clgroup.keygen();
+        let sk_i = clgroup.secret_key_gen(&mut rand_gen);
+        let pk_i = clgroup.public_key_gen(&sk_i);
         clsk.insert(i.into(), sk_i);
         clpk.insert(i.into(), pk_i);
     }
@@ -261,8 +269,12 @@ async fn test_dkg_presign_sign() {
     for i in 0..n {
         let party = simulation.add_party();
         let mysk = clsk[&(i as usize)].clone();
+
+        let mut rand = RandGen::new();
+        rand.set_seed(&rand_gen.random_mpz(&clgroup.encrypt_randomness_bound()));
+
         let output =
-            protocol_dkg_presign_sign(party, i, t, n.into(), clgroup.clone(), clpk.clone(), mysk);
+            protocol_dkg_presign_sign(party, i, t, n.into(), clgroup.clone(), rand, clpk.clone(), mysk);
         party_output.push(output);
     }
 
@@ -274,9 +286,10 @@ pub async fn protocol_dkg_presign<M>(
     myid: PartyIndex,
     t: usize,
     n: usize,
-    clgroup: CLGroup,
-    clpk: BTreeMap<usize, PK>,
-    mysk: SK,
+    clgroup: CL_HSMqk,
+    mut rand_gen: RandGen,
+    clpk: BTreeMap<usize, PublicKey>,
+    mysk: SecretKey,
 ) -> Result<PreSignature, Error<M::SendError, M::ReceiveError>>
 where
     M: Mpc<ProtocolMessage = Msg>,
@@ -295,7 +308,7 @@ where
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
-    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk);
+    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -313,6 +326,7 @@ where
         &x_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         false,
         clpk.clone(),
         &mysk,
@@ -320,8 +334,8 @@ where
 
     // Step 1: Generation of nonces k and gamma
     let my_nonce_gen_msg = NonceGenMsg {
-        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk),
-        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &clpk),
+        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
     };
 
     outgoing
@@ -348,6 +362,7 @@ where
         &k_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         true,
         clpk.clone(),
         &mysk,
@@ -358,6 +373,7 @@ where
         &gamma_dkg_messages,
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         false,
         clpk.clone(),
         &mysk,
@@ -368,6 +384,7 @@ where
         parties.clone(),
         myid.into(),
         clgroup.clone(),
+        &mut rand_gen,
         &clpk,
         k_dkg_output.clone(),
         gamma_dkg_output.clone().share,
@@ -395,6 +412,7 @@ where
         myid.into(),
         mta_messages.clone(),
         clgroup.clone(),
+        &mut rand_gen,
         mysk,
         betas,
         nus,
@@ -441,13 +459,19 @@ async fn test_dkg_presign_only() {
 
     let mut simulation = Simulation::<Msg>::new();
     let mut party_output = vec![];
-    let clgroup = CLGroup::new_from_setup(&1600, &BigInt::strict_sample(1500));
 
-    let mut clsk = BTreeMap::<usize, SK>::new();
-    let mut clpk = BTreeMap::<usize, PK>::new();
+    let seed = Mpz::from(chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
+    let mut rand_gen = RandGen::new();
+    rand_gen.set_seed(&seed);
+
+    let clgroup = CL_HSMqk::with_qnbits_rand_gen(50, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
+
+    let mut clsk = BTreeMap::<usize, SecretKey>::new();
+    let mut clpk = BTreeMap::<usize, PublicKey>::new();
 
     for i in 0..n {
-        let (sk_i, pk_i) = clgroup.keygen();
+        let sk_i = clgroup.secret_key_gen(&mut rand_gen);
+        let pk_i = clgroup.public_key_gen(&sk_i);
         clsk.insert(i.into(), sk_i);
         clpk.insert(i.into(), pk_i);
     }
@@ -455,8 +479,12 @@ async fn test_dkg_presign_only() {
     for i in 0..n {
         let party = simulation.add_party();
         let mysk = clsk[&(i as usize)].clone();
+
+        let mut rand = RandGen::new();
+        rand.set_seed(&rand_gen.random_mpz(&clgroup.encrypt_randomness_bound()));
+
         let output =
-            protocol_dkg_presign(party, i, t, n.into(), clgroup.clone(), clpk.clone(), mysk);
+            protocol_dkg_presign(party, i, t, n.into(), clgroup.clone(), rand, clpk.clone(), mysk);
         party_output.push(output);
     }
 
