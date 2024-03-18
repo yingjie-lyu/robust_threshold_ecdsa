@@ -187,7 +187,7 @@ impl ProofCorrectSharing {
         encrypted_shares: &BTreeMap<usize, QFI>,
     ) -> ProofCorrectSharing {
         let rho = clgroup.secret_key_gen(rand_gen);
-        let W = clgroup.public_key_gen(&r);
+        let W = clgroup.public_key_gen(&rho);
         let W = W.elt();
 
         let alpha = Scalar::<Secp256k1>::random();
