@@ -189,7 +189,7 @@ impl PreSignFinalMsg {
                 let pt = clgroup.decrypt(&myclsk, &msg.encrypted_alphas[&myid]);
                 (
                     j,
-                    Scalar::<Secp256k1>::from_bytes(pt.mpz().to_bytes().as_slice()).unwrap()
+                    Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(pt.mpz().to_bytes().as_slice()))
                 )
             })
             .collect();
@@ -201,7 +201,7 @@ impl PreSignFinalMsg {
                 let pt = clgroup.decrypt(&myclsk, &msg.encrypted_mus[&myid]);
                 (
                     j,
-                    Scalar::<Secp256k1>::from_bytes(pt.mpz().to_bytes().as_slice()).unwrap()
+                    Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(pt.mpz().to_bytes().as_slice()))
                 )
             })
             .collect();

@@ -20,13 +20,9 @@ include_cpp! {
 }
 
 use std::pin::Pin;
-use std::ptr;
 use crate::ffi::BICYCL;
 use autocxx::{c_long, c_ulong};
-use autocxx::moveit::new::by;
-use autocxx::prelude::*;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
-use serde::ser::SerializeStruct;
 
 pub struct Mpz {
     mpz: Pin<Box<BICYCL::Mpz>>,
@@ -123,13 +119,19 @@ impl Clone for Mpz {
 
 impl Debug for Mpz {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Mpz {{ mpz: Not implemented }}")
+        write!(f, "Mpz {{ mpz: {} }}", self.to_string())
     }
 }
 
 impl PartialEq for Mpz {
     fn eq(&self, other: &Self) -> bool {
         self.mpz.is_equal(&*other.mpz)
+    }
+}
+
+impl ToString for Mpz {
+    fn to_string(&self) -> String {
+        self.mpz.str_value().to_string()
     }
 }
 
@@ -145,9 +147,6 @@ impl Mpz {
         self.mpz.to_bytes(vec.pin_mut());
 
         vec.as_slice().to_vec()
-    }
-    pub fn str_value(&self) -> String {
-        return self.mpz.str_value().to_string();
     }
 
     fn bicycl_mpz_with_vec(vec: &Vec<u8>) -> Pin<Box<BICYCL::Mpz>> {

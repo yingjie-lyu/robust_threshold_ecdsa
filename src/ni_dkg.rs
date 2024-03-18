@@ -126,7 +126,7 @@ impl NiDkgOutput {
         for &j in &honest_parties {
             let ct = CipherText::new(&messages[j].rand_cmt, &messages[j].encrypted_shares[&myid]);
             let pt = clgroup.decrypt(mysk, &ct);
-            x_i = x_i + Scalar::<Secp256k1>::from_bytes(pt.mpz().to_bytes().as_slice()).unwrap();
+            x_i = x_i + Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(pt.mpz().to_bytes().as_slice()));
 
             X = X + &messages[j].poly_coeff_cmt[0];
 
@@ -158,6 +158,9 @@ impl NiDkgOutput {
                 c_j_list.insert(*j, c_j.clone());
             }
         }
+
+        println!("wsccc {}", want_encrypted_shares);
+        println!("wsccc {:?}", c_j_list);
 
         NiDkgOutput {
             parties: honest_parties,
@@ -216,10 +219,10 @@ impl ProofCorrectSharing {
         let z_s = shares
             .iter()
             .map(|(j, s)| {
-                s.mul(Scalar::<Secp256k1>::from_bytes(&gamma.pow((j + 1) as u64).to_bytes()).unwrap())
+                s.mul(Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(&gamma.pow((j + 1) as u64).to_bytes())))
             })
             .sum::<Scalar<Secp256k1>>()
-            .mul(Scalar::<Secp256k1>::from_bytes(&gamma_prime.to_bytes()).unwrap())
+            .mul(Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(&gamma_prime.to_bytes())))
             .add(&alpha);
 
         ProofCorrectSharing { W, X, Y, z_r, z_s }
@@ -267,7 +270,7 @@ impl ProofCorrectSharing {
                     .sum()
             })
             .sum();
-        if &msg.proof.X + eq2in * Scalar::<Secp256k1>::from_bytes(&gamma_prime.to_bytes()).unwrap()
+        if &msg.proof.X + eq2in * Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(&gamma_prime.to_bytes()))
             != Point::<Secp256k1>::generator() * &msg.proof.z_s
         {
             return false;
