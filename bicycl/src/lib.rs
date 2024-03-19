@@ -22,6 +22,7 @@ include_cpp! {
 use std::pin::Pin;
 use crate::ffi::BICYCL;
 use autocxx::{c_long, c_ulong};
+use cxx::{CxxString, let_cxx_string};
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
 pub struct Mpz {
@@ -40,6 +41,15 @@ impl From<u64> for Mpz {
     fn from(value: u64) -> Self {
         Mpz {
             mpz: BICYCL::Mpz::new3(c_ulong(value)).within_box()
+        }
+    }
+}
+
+impl<'a> From<&'a str> for Mpz {
+    fn from(value: &'a str) -> Self {
+        let_cxx_string!(t = value);
+        Mpz {
+            mpz: BICYCL::Mpz::new5(&t).within_box()
         }
     }
 }
@@ -237,6 +247,12 @@ pub struct QFI {
 }
 
 impl QFI {
+    pub fn from_mpz(a: &Mpz, b: &Mpz, c: &Mpz) -> Self {
+        QFI {
+            qfi: BICYCL::QFI::new1(&*a.mpz, &*b.mpz, &*c.mpz, true).within_box()
+        }
+    }
+
     pub fn a(&self) -> Mpz {
         Mpz {
             mpz: BICYCL::Mpz::copy_from(self.qfi.a()).within_box(),
@@ -293,7 +309,7 @@ impl Clone for QFI {
 
 impl Debug for QFI {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "QFI {{ qfi: Not implemented }}")
+        write!(f, "QFI {{ a: {}, b: {}, c: {} }}", self.a().to_string(), self.b().to_string(), self.c().to_string())
     }
 }
 
