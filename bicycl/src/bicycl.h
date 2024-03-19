@@ -154,10 +154,9 @@ namespace BICYCL
         int kronecker (const Mpz &) const;
 
         void to_bytes(std::vector<unsigned char> &dst) const {
-            auto bit_size = sizeof(unsigned char) * 8;
-            size_t size = (mpz_sizeinbase(mpz_, 2) + bit_size - 1) / bit_size;
+            size_t size = (mpz_sizeinbase(mpz_, 2) + 8 - 1) / 8;
             dst.resize(size);
-            mpz_export(dst.data(), NULL, 1, bit_size, 0, 0, mpz_);
+            mpz_export(dst.data(), NULL, 1, 1, 0, 0, mpz_);
         }
 
         bool is_equal(const Mpz & other) const {

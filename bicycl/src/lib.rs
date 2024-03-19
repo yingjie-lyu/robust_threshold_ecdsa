@@ -165,7 +165,7 @@ impl Mpz {
         for byte in vec {
             cxx_vec.pin_mut().push(*byte);
         }
-        BICYCL::Mpz::new8(&*cxx_vec, cxx_vec.len()).within_box()
+        BICYCL::Mpz::new8(&*cxx_vec, cxx_vec.len() * 8).within_box()
     }
 
     pub fn pow(&self, exponent: u64) -> Self {
