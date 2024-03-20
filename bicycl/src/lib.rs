@@ -433,6 +433,12 @@ impl CL_HSMqk {
         }
     }
 
+    pub fn q(&self) -> Mpz {
+        Mpz {
+            mpz: BICYCL::Mpz::copy_from(self.c.q()).within_box(),
+        }
+    }
+
     pub fn power_of_h(&self, e: &Mpz) -> QFI {
         let mut result = BICYCL::QFI::new().within_box();
         self.c.power_of_h(result.as_mut(), &*e.mpz);
@@ -471,6 +477,12 @@ pub struct SecretKey {
 }
 
 impl SecretKey {
+    pub fn from_mpz(cl_hsmqk: &CL_HSMqk, mpz: &Mpz) -> Self {
+        SecretKey {
+            sk: BICYCL::CL_HSMqk_SecretKey::new(&*cl_hsmqk.c, &*mpz.mpz).within_box(),
+        }
+    }
+
     pub fn mpz(&self) -> Mpz {
         Mpz {
             mpz: BICYCL::CL_HSMqk_SecretKey::to_mpz(&*self.sk).within_box(),

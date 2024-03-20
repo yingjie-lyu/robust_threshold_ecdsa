@@ -159,9 +159,6 @@ impl NiDkgOutput {
             }
         }
 
-        println!("wsccc {}", want_encrypted_shares);
-        println!("wsccc {:?}", c_j_list);
-
         NiDkgOutput {
             parties: honest_parties,
             share: x_i,
