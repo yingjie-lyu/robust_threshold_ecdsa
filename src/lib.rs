@@ -9,7 +9,7 @@ use curv::{
     BigInt,
 };
 use futures::SinkExt;
-use ni_dkg::{NiDkgMsg, NiDkgOutput};
+use ni_dkg::{PvssDealing, NiDkgOutput};
 use round_based::{
     rounds_router::simple_store::RoundInput, rounds_router::RoundsRouter, simulation::Simulation,
     Delivery, Mpc, MpcParty, Outgoing, PartyIndex, ProtocolMessage,
@@ -26,8 +26,8 @@ pub mod tests;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NonceGenMsg {
-    pub k_dkg_msg: NiDkgMsg, // encrypted_shares have to be present
-    pub gamma_dkg_msg: NiDkgMsg,
+    pub k_dkg_msg: PvssDealing, // encrypted_shares have to be present
+    pub gamma_dkg_msg: PvssDealing,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

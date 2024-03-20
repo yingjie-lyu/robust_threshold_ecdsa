@@ -14,6 +14,8 @@ cxx = "1.0"
 chrono = "0.4.33"
 serde = {}
 #tokio = { version = "1.15", features = ["full"] }
+curv-kzen = { version = "0.10", default-features = true }
+
 
 [build-dependencies]
 autocxx-build = "0.26.0"

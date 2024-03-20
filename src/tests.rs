@@ -5,7 +5,7 @@ use curv::{
     BigInt,
 };
 use futures::SinkExt;
-use crate::ni_dkg::{NiDkgMsg, NiDkgOutput};
+use crate::ni_dkg::{PvssDealing, NiDkgOutput};
 use crate::*;
 use round_based::{
     rounds_router::simple_store::RoundInput, rounds_router::RoundsRouter, simulation::Simulation,
@@ -17,7 +17,7 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
 pub enum Msg {
-    NiDkgMsg(NiDkgMsg),
+    NiDkgMsg(PvssDealing),
     NonceGenMsg(NonceGenMsg),
     MtAwcMsg(MtAwcMsg),
     PreSignFinalMsg(PreSignFinalMsg),
@@ -50,7 +50,7 @@ where
     let MpcParty { delivery, .. } = party.into_party();
     let (incoming, mut outgoing) = delivery.split();
     let mut rounds = RoundsRouter::<Msg>::builder();
-    let round0 = rounds.add_round(RoundInput::<NiDkgMsg>::broadcast(myid, n_u16));
+    let round0 = rounds.add_round(RoundInput::<PvssDealing>::broadcast(myid, n_u16));
     let round1 = rounds.add_round(RoundInput::<NonceGenMsg>::broadcast(myid, n_u16));
     let round2 = rounds.add_round(RoundInput::<MtAwcMsg>::broadcast(myid, n_u16));
     let round3 = rounds.add_round(RoundInput::<PreSignFinalMsg>::broadcast(myid, n_u16));
@@ -58,7 +58,7 @@ where
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
-    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
+    let my_ni_dkg_msg = PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -84,8 +84,8 @@ where
 
     // Step 1: Generation of nonces k and gamma
     let my_nonce_gen_msg = NonceGenMsg {
-        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
-        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        k_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        gamma_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
     };
 
     outgoing
@@ -301,14 +301,14 @@ where
     let MpcParty { delivery, .. } = party.into_party();
     let (incoming, mut outgoing) = delivery.split();
     let mut rounds = RoundsRouter::<Msg>::builder();
-    let round0 = rounds.add_round(RoundInput::<NiDkgMsg>::broadcast(myid, n_u16));
+    let round0 = rounds.add_round(RoundInput::<PvssDealing>::broadcast(myid, n_u16));
     let round1 = rounds.add_round(RoundInput::<NonceGenMsg>::broadcast(myid, n_u16));
     let round2 = rounds.add_round(RoundInput::<MtAwcMsg>::broadcast(myid, n_u16));
     let round3 = rounds.add_round(RoundInput::<PreSignFinalMsg>::broadcast(myid, n_u16));
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
-    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
+    let my_ni_dkg_msg = PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -334,8 +334,8 @@ where
 
     // Step 1: Generation of nonces k and gamma
     let my_nonce_gen_msg = NonceGenMsg {
-        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
-        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        k_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        gamma_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
     };
 
     outgoing

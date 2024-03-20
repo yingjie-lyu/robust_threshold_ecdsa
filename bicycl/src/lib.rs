@@ -25,6 +25,11 @@ use autocxx::{c_long, c_ulong};
 use cxx::{CxxString, let_cxx_string};
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
+use curv::{
+    arithmetic::{BasicOps, Converter, Samplable},
+    elliptic::curves::{Point, Scalar, Secp256k1},
+    BigInt,
+};
 pub struct Mpz {
     mpz: Pin<Box<BICYCL::Mpz>>,
 }
@@ -51,6 +56,12 @@ impl<'a> From<&'a str> for Mpz {
         Mpz {
             mpz: BICYCL::Mpz::new5(&t).within_box()
         }
+    }
+}
+
+impl<'a> From<&'a Scalar<Secp256k1>> for Mpz {
+    fn from(value: &'a Scalar<Secp256k1>) -> Self {
+        Mpz::from_bytes(value.to_bigint().to_bytes().as_slice())
     }
 }
 
@@ -468,6 +479,12 @@ impl CL_HSMqk {
     pub fn encrypt_randomness_bound(&self) -> Mpz {
         Mpz {
             mpz: BICYCL::Mpz::copy_from(self.c.encrypt_randomness_bound()).within_box(),
+        }
+    }
+
+    pub fn discriminant(&self) -> Mpz {
+        Mpz {
+            mpz: BICYCL::Mpz::copy_from(self.c.Delta()).within_box(),
         }
     }
 }

@@ -8,7 +8,7 @@ use curv::{
 use futures::SinkExt;
 use round_optimal_robust_threshold_ecdsa::{
     *,
-    ni_dkg::{NiDkgMsg, NiDkgOutput},
+    ni_dkg::{PvssDealing, NiDkgOutput},
     tests::{Msg, Error},
 };
 use round_based::{
@@ -100,7 +100,7 @@ pub async fn protocol_dkg_presign_sign<M>(
     let MpcParty { delivery, .. } = party.into_party();
     let (incoming, mut outgoing) = delivery.split();
     let mut rounds = RoundsRouter::<Msg>::builder();
-    let round0 = rounds.add_round(RoundInput::<NiDkgMsg>::broadcast(myid, n_u16));
+    let round0 = rounds.add_round(RoundInput::<PvssDealing>::broadcast(myid, n_u16));
     let round1 = rounds.add_round(RoundInput::<NonceGenMsg>::broadcast(myid, n_u16));
     let round2 = rounds.add_round(RoundInput::<MtAwcMsg>::broadcast(myid, n_u16));
     let round3 = rounds.add_round(RoundInput::<PreSignFinalMsg>::broadcast(myid, n_u16));
@@ -108,7 +108,7 @@ pub async fn protocol_dkg_presign_sign<M>(
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
-    let my_ni_dkg_msg = NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
+    let my_ni_dkg_msg = PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -134,8 +134,8 @@ pub async fn protocol_dkg_presign_sign<M>(
 
     // Step 1: Generation of nonces k and gamma
     let my_nonce_gen_msg = NonceGenMsg {
-        k_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
-        gamma_dkg_msg: NiDkgMsg::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        k_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        gamma_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
     };
 
     outgoing
