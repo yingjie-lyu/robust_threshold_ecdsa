@@ -253,7 +253,8 @@ async fn test_dkg_presign_sign() {
     let mut rand_gen = RandGen::new();
     rand_gen.set_seed(&seed);
 
-    let clgroup = CL_HSMqk::with_qnbits_rand_gen(50, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
+    let q = Mpz::from("115792089237316195423570985008687907852837564279074904382605163141518161494337");
+    let clgroup = CL_HSMqk::with_rand_gen(&q, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
 
     let mut clsk = BTreeMap::<usize, SecretKey>::new();
     let mut clpk = BTreeMap::<usize, PublicKey>::new();
