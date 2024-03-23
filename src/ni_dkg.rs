@@ -208,13 +208,7 @@ impl PvssNizk {
             .exp(&pp.CL_group, &u1)
             .compose(&pp.CL_group, &pp.CL_group.power_of_f(&Mpz::from(&u2)));
 
-        let mut hash = Sha256::new()
-            .chain_update(&gamma.to_bigint().to_bytes())
-            .chain_update(&U1.to_bytes())
-            .chain_update(&U2.to_bytes(true))
-            .chain_update(&U3.to_bytes())
-            .finalize();
-        let e = Zq::from_bytes(&hash[..16]).unwrap();
+        let e = Self::challenge2(&gamma, &U1, &U2, &U3);
 
         let z1 = u1 + Mpz::from(&e) * r;
         let poly = Polynomial::new(shares.values().cloned().collect());
@@ -224,7 +218,7 @@ impl PvssNizk {
     }
 
     pub fn verify(&self, dealing: &PvssDealing, pp: &PubParams, curve_generator: &G) -> bool {
-        let gamma = PvssNizk::challenge1(pp, dealing, curve_generator);
+        let gamma = Self::challenge1(pp, dealing, curve_generator);
 
         // U1
         let mut U1 = &pp.CL_group.power_of_h(&self.z1);
@@ -264,15 +258,7 @@ impl PvssNizk {
 
         U3 = &U3.compose(&pp.CL_group, &U3d.exp(&pp.CL_group, &Mpz::from(&-self.e)));
 
-        // compare hash
-        let mut hash = Sha256::new()
-            .chain_update(&gamma.to_bigint().to_bytes())
-            .chain_update(&U1.to_bytes())
-            .chain_update(&U2.to_bytes(true))
-            .chain_update(&U3.to_bytes())
-            .finalize();
-        let e = Zq::from_bytes(&hash[..16]).unwrap();
-
+        let e = Self::challenge2(&gamma, &U1, &U2, &U3);
         self.e == e
     }
 
@@ -293,6 +279,16 @@ impl PvssNizk {
             hasher.update(&coeff.to_bytes(true));
         }
         Zq::from_bytes(&hasher.finalize()[..16]).unwrap()
+    }
+
+    fn challenge2(gamma: &Zq, U1: &QFI, U2: &G, U3: &QFI) -> Zq {
+        let hash = Sha256::new()
+            .chain_update(&gamma.to_bigint().to_bytes())
+            .chain_update(&U1.to_bytes())
+            .chain_update(&U2.to_bytes(true))
+            .chain_update(&U3.to_bytes())
+            .finalize();
+        Zq::from_bytes(&hash[..16]).unwrap()
     }
 }
 
@@ -397,7 +393,7 @@ impl MtaDealing {
 }
 
 pub struct MtaNizk {
-    pub e:  Zq,
+    pub e: Zq,
     pub z1: Mpz,
     pub z2: Zq,
 }
@@ -423,7 +419,10 @@ impl MtaNizk {
                 let mac = dealing.curve_macs[id];
                 let share = pairwise_shares[id];
                 let res = E.compose(&pp.CL_group, &mac.exp(&pp.CL_group, &z1));
-                res.compose(&pp.CL_group, &curve_generator.exp(&pp.CL_group, &z2) * share)
+                res.compose(
+                    &pp.CL_group,
+                    &curve_generator.exp(&pp.CL_group, &z2) * share,
+                )
             })
             .reduce(|acc, U| acc.compose(&pp.CL_group, &U))
             .unwrap();
@@ -443,8 +442,6 @@ impl MtaNizk {
         Self { e, z1, z2 }
     }
 }
-
-
 
 // impl NiDkgOutput {
 //     pub fn from_combining(
