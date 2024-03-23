@@ -2,9 +2,7 @@ use std::{
     collections::BTreeMap, io,
 };
 use bicycl::{CL_HSMqk, Mpz, PublicKey, RandGen, SecretKey};
-use curv::{
-    elliptic::curves::{Secp256k1, Point},
-};
+use curv::elliptic::curves::{Secp256k1, Point};
 use futures::SinkExt;
 use round_optimal_robust_threshold_ecdsa::{
     *,

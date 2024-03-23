@@ -450,6 +450,7 @@ impl CL_HSMqk {
         }
     }
 
+    
     pub fn power_of_h(&self, e: &Mpz) -> QFI {
         let mut result = BICYCL::QFI::new().within_box();
         self.c.power_of_h(result.as_mut(), &*e.mpz);
