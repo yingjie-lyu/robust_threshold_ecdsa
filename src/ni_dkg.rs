@@ -156,13 +156,14 @@ impl PvssDealing {
         curve_generator: &G,
     ) -> (Self, Mpz, Polynomial, BTreeMap<id, Zq>) {
         // make coefficients of a (t-1)-degree polynomial, and derive the shares
-        let coeffs: Vec<_> = (0..*&pp.t).map(|_| Zq::random()).collect();
-        let poly = Polynomial::new(coeffs);
+        let poly = Polynomial {
+            coeffs: (0..pp.t).map(|_| Zq::random()).collect(),
+        };
 
         let shares = pp
             .CL_keyring
             .iter()
-            .map(|(id, CLpk)| (*id, poly.eval(&Zq::from(*id as u64))))
+            .map(|(&id, CLpk)| (id, poly.eval(&Zq::from(id as u64))))
             .collect();
 
         let curve_polynomial = CurvePolynomial::from_exp(&poly, &curve_generator);
@@ -194,11 +195,11 @@ impl PvssNizk {
         let u1 = rng.random_mpz(&pp.CL_group.encrypt_randomness_bound());
         let u2 = Zq::random();
         let U1 = &pp.CL_group.power_of_h(&u1);
-        let U2 = *&curve_generator * &u2;
+        let U2 = curve_generator * &u2;
         let gamma = PvssNizk::challenge1(pp, dealing, curve_generator);
 
-        let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
-        for (id, pk) in pp.CL_keyring.into_iter().rev() {
+        let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0u64));
+        for (id, pk) in pp.CL_keyring.iter().rev() {
             U3 = &U3
                 .exp(&pp.CL_group, &Mpz::from(&gamma))
                 .compose(&pp.CL_group, &pk.elt());
@@ -237,16 +238,15 @@ impl PvssNizk {
         // curve polynomial defined by shares
         let shares_on_curve = pp
             .CL_keyring
-            .keys()
-            .into_iter()
-            .map(|id| dealing.curve_polynomial.eval(&Zq::from(*id as u64)))
+            .iter()
+            .map(|(&id, _)| dealing.curve_polynomial.eval(&Zq::from(id as u64)))
             .collect::<Vec<G>>();
         let shares_curve_poly = CurvePolynomial::new(shares_on_curve);
         let U2 = curve_generator * &self.z2 - shares_curve_poly.eval(&gamma) * &self.e;
 
         // U3
         let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
-        for (id, pk) in pp.CL_keyring.into_iter().rev() {
+        for (id, pk) in pp.CL_keyring.iter().rev() {
             U3 = &U3
                 .exp(&pp.CL_group, &Mpz::from(&gamma))
                 .compose(&pp.CL_group, &pk.elt());
@@ -256,7 +256,7 @@ impl PvssNizk {
             .compose(&pp.CL_group, &pp.CL_group.power_of_f(&Mpz::from(&self.z2)));
 
         let mut U3d = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
-        for (id, E) in dealing.encrypted_shares.encryption.into_iter().rev() {
+        for (id, E) in dealing.encrypted_shares.encryption.iter().rev() {
             U3d = &U3d
                 .exp(&pp.CL_group, &Mpz::from(&gamma))
                 .compose(&pp.CL_group, &E);
@@ -303,7 +303,7 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
         coeffs: (0..pp.t)
             .map(|i| {
                 let sum = dealings
-                    .into_par_iter()
+                    .iter()
                     .map(|d| d.curve_polynomial.coeffs[i as usize])
                     .sum::<G>();
                 sum
@@ -319,11 +319,10 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
 
     let encryption = pp
         .CL_keyring
-        .keys()
-        .into_iter()
-        .map(|id| {
+        .iter()
+        .map(|(id, _)| {
             let sum = dealings
-                .into_iter()
+                .iter()
                 .map(|d| {
                     d.encrypted_shares
                         .encryption
@@ -345,7 +344,6 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
     }
 }
 
-
 pub struct MtaDealing {
     pub randomness: QFI,
     pub encryption: BTreeMap<id, QFI>,
@@ -353,24 +351,39 @@ pub struct MtaDealing {
 }
 
 impl MtaDealing {
-    pub fn new(pp: &PubParams, pvss_result: &PvssDealing, scalar: &Zq, curve_generator: &G) -> (Self, Vec<Zq>) {
-        let randomness = pvss_result.encrypted_shares.randomness.exp(&pp.CL_group, &Mpz::from(scalar));
+    /// the pairwise shares returned should be negated when later used
+    pub fn new(
+        pp: &PubParams,
+        pvss_result: &PvssDealing,
+        scalar: &Zq,
+        curve_generator: &G,
+    ) -> (Self, BTreeMap<id, Zq>) {
+        let randomness = pvss_result
+            .encrypted_shares
+            .randomness
+            .exp(&pp.CL_group, &Mpz::from(scalar));
 
-        let pairwise_shares = pvss_result.encrypted_shares.encryption.iter().map(|_| Zq::random()).collect();
+        let multienc = &pvss_result.encrypted_shares.encryption;
 
-        let mut encryption = BTreeMap::new();
-        let mut curve_macs = BTreeMap::new();
-        let mut secrets = Vec::new();
+        let pairwise_shares: BTreeMap<id, Zq> =
+            multienc.iter().map(|(&id, _)| (id, Zq::random())).collect();
 
-        for (id, E) in &pvss_result.encrypted_shares.encryption {
-            let secret = Zq::random();
-            let mac = curve_generator * &secret;
-            let enc = E.compose(&pp.CL_group, &pp.CL_group.power_of_h(&secret));
-            let enc = enc.compose(&pp.CL_group, &pp.CL_group.power_of_h(&r));
-            encryption.insert(*id, enc);
-            curve_macs.insert(*id, mac);
-            secrets.push(secret);
-        }
+        let encryption = multienc
+            .iter()
+            .map(|(id, E)| {
+                let res = E.exp(&pp.CL_group, &Mpz::from(scalar)).compose(
+                    &pp.CL_group,
+                    &pp.CL_group.power_of_f(&Mpz::from(&pairwise_shares[id])),
+                );
+                (*id, res)
+            })
+            .collect();
+
+        let curve_macs = multienc
+            .iter()
+            .map(|(&id, _)| (id, pvss_result.curve_polynomial.eval(&Zq::from(id as u64))))
+            .map(|(id, mac)| (id, scalar * mac + curve_generator * pairwise_shares[&id]))
+            .collect();
 
         (
             MtaDealing {
@@ -378,10 +391,61 @@ impl MtaDealing {
                 encryption,
                 curve_macs,
             },
-            secrets,
+            pairwise_shares,
         )
     }
 }
+
+pub struct MtaNizk {
+    pub e:  Zq,
+    pub z1: Mpz,
+    pub z2: Zq,
+}
+
+impl MtaNizk {
+    pub fn prove(
+        pp: &PubParams,
+        dealing: &MtaDealing,
+        curve_generator: &G,
+        scalar: &Zq,
+        pairwise_shares: &BTreeMap<id, Zq>,
+    ) -> Self {
+        let u1 = Mpz::random();
+        let u2 = Zq::random();
+
+        let U1 = curve_generator.exp(&pp.CL_group, &z1);
+        let U2 = curve_generator.exp(&pp.CL_group, &z2);
+
+        let U3 = dealing
+            .encryption
+            .iter()
+            .map(|(id, E)| {
+                let mac = dealing.curve_macs[id];
+                let share = pairwise_shares[id];
+                let res = E.compose(&pp.CL_group, &mac.exp(&pp.CL_group, &z1));
+                res.compose(&pp.CL_group, &curve_generator.exp(&pp.CL_group, &z2) * share)
+            })
+            .reduce(|acc, U| acc.compose(&pp.CL_group, &U))
+            .unwrap();
+
+        let gamma = Self::challenge1(pp, dealing, curve_generator);
+
+        let e = Zq::from(&gamma * scalar + z2);
+
+        let hash = Sha256::new()
+            .chain_update(&gamma.to_bigint().to_bytes())
+            .chain_update(&U1.to_bytes())
+            .chain_update(&U2.to_bytes(true))
+            .chain_update(&U3.to_bytes())
+            .finalize();
+        let e = Zq::from_bytes(&hash[..16]).unwrap();
+
+        Self { e, z1, z2 }
+    }
+}
+
+
+
 // impl NiDkgOutput {
 //     pub fn from_combining(
 //         parties: Vec<usize>,
