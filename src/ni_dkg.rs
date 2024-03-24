@@ -163,7 +163,7 @@ impl PvssDealing {
         let shares = pp
             .CL_keyring
             .iter()
-            .map(|(&id, CLpk)| (id, poly.eval(&Zq::from(id as u64))))
+            .map(|(&id, _)| (id, poly.eval(&Zq::from(id as u64))))
             .collect();
 
         let curve_polynomial = CurvePolynomial::from_exp(&poly, &curve_generator);
@@ -347,6 +347,7 @@ pub struct MtaDealing {
 }
 
 impl MtaDealing {
+    /// the caller should remove disqualified parties from pvss_result
     /// the pairwise shares returned should be negated when later used
     pub fn new(
         pp: &PubParams,
@@ -401,48 +402,123 @@ pub struct MtaNizk {
 impl MtaNizk {
     pub fn prove(
         pp: &PubParams,
-        dealing: &MtaDealing,
+        pvss_result: &PvssDealing,
+        mta_result: &MtaDealing,
         curve_generator: &G,
+        rng: &mut RandGen,
         scalar: &Zq,
         pairwise_shares: &BTreeMap<id, Zq>,
     ) -> Self {
-        let u1 = Mpz::random();
+        let u1 = rng.random_mpz(&pp.CL_group.encrypt_randomness_bound());
         let u2 = Zq::random();
+        // let gamma = Self::challenge1(pp, pvss_result, mta_result, curve_generator);
+        let gamma = Zq::random();
 
-        let U1 = curve_generator.exp(&pp.CL_group, &z1);
-        let U2 = curve_generator.exp(&pp.CL_group, &z2);
+        let u1_modq = Zq::from(BigInt::from_bytes(&u1.to_bytes()) % Zq::group_order());
+        let U1 = G::generator() * &u1_modq;
+        let U2 = pvss_result
+            .encrypted_shares
+            .randomness
+            .exp(&pp.CL_group, &u1);
 
-        let U3 = dealing
-            .encryption
+        // U3
+        let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
+        for (id, _) in mta_result.encryption.iter().rev() {
+            U3 = &U3
+                .exp(&pp.CL_group, &Mpz::from(&gamma))
+                .compose(&pp.CL_group, &pvss_result.encrypted_shares.encryption[&id]);
+        } 
+        U3 = &U3
+            .exp(&pp.CL_group, &u1)
+            .compose(&pp.CL_group, &pp.CL_group.power_of_f(&Mpz::from(&u2)));
+
+        // compute original macs from pvss_result.curve_polynomial
+        // TODO: profile, and may make sense to optimize by reusing the curve_macs from MtaDealing.new
+        let orig_curve_macs = mta_result
+            .curve_macs
             .iter()
-            .map(|(id, E)| {
-                let mac = dealing.curve_macs[id];
-                let share = pairwise_shares[id];
-                let res = E.compose(&pp.CL_group, &mac.exp(&pp.CL_group, &z1));
-                res.compose(
-                    &pp.CL_group,
-                    &curve_generator.exp(&pp.CL_group, &z2) * share,
-                )
-            })
-            .reduce(|acc, U| acc.compose(&pp.CL_group, &U))
-            .unwrap();
+            .map(|(&id, _)| (id, pvss_result.curve_polynomial.eval(&Zq::from(id as u64))));
 
-        let gamma = Self::challenge1(pp, dealing, curve_generator);
+        let mut U4 = G::zero();
+        for (id, M) in orig_curve_macs.rev() {
+            U4 = &U4 * &gamma + M;
+        }
+        U4 = U4 * &u1_modq + curve_generator * &u2;
 
-        let e = Zq::from(&gamma * scalar + z2);
+        // let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
+        let e = Zq::random();
+        let z1 = &u1 + Mpz::from(&(&e * scalar));
 
-        let hash = Sha256::new()
-            .chain_update(&gamma.to_bigint().to_bytes())
-            .chain_update(&U1.to_bytes())
-            .chain_update(&U2.to_bytes(true))
-            .chain_update(&U3.to_bytes())
-            .finalize();
-        let e = Zq::from_bytes(&hash[..16]).unwrap();
+        // computes z2. Since some indices may be missing (due to the parties dropping out),
+        // we need to explicitly compute the polynomial evaluation using Horner's method
+        let mut z2 = Zq::zero();
+        for (id, b) in pairwise_shares.iter() {
+            z2 = &z2 + b * &gamma;
+        }
+        z2 = &u2 + e * z2;
 
         Self { e, z1, z2 }
     }
-}
 
+    pub fn verify(
+        &self,
+        pp: &PubParams,
+        pvss_result: &PvssDealing,
+        mta_result: &MtaDealing,
+        curve_generator: &G,
+        scalar_pub: &G,
+        pairwise_shares: &BTreeMap<id, Zq>,
+    ) -> bool {
+        // let gamma = Self::challenge1(pp, pvss_result, mta_result, curve_generator);
+        let gamma = Zq::random();
+
+        let z1_modq = Zq::from(BigInt::from_bytes(&self.z1.to_bytes()) % Zq::group_order());
+        let U1 = G::generator() * z1_modq - scalar_pub * &self.e;
+
+        // U2
+        let U2d = mta_result.randomness.exp(&pp.CL_group, &Mpz::from(&-self.e));
+        let U2 = pvss_result
+            .encrypted_shares
+            .randomness
+            .exp(&pp.CL_group, &self.z1)
+            .compose(&pp.CL_group, &U2d);
+
+        // U3
+        let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
+        let mut U3d = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
+        for (id, E) in mta_result.encryption.iter().rev() {
+            U3 = &U3
+                .exp(&pp.CL_group, &Mpz::from(&gamma))
+                .compose(&pp.CL_group, &pvss_result.encrypted_shares.encryption[&id]);
+
+            U3d = &U3d
+                .exp(&pp.CL_group, &Mpz::from(&gamma))
+                .compose(&pp.CL_group, &E);
+        } 
+        U3d = &U3d.exp(&pp.CL_group, &Mpz::from(&-self.e));
+        U3 = &U3
+            .exp(&pp.CL_group, &self.z1)
+            .compose(&pp.CL_group, &U3d)
+            .compose(&pp.CL_group, &pp.CL_group.power_of_f(&Mpz::from(&self.z2)));
+
+        // U4
+        let orig_curve_macs = mta_result
+            .curve_macs
+            .iter()
+            .map(|(&id, _)| (id, pvss_result.curve_polynomial.eval(&Zq::from(id as u64))));
+
+        let mut U4 = G::zero();
+        for (id, M) in orig_curve_macs.rev() {
+            U4 = &U4 * &gamma + M;
+        }
+        U4 = U4 * &self.z1 + curve_generator * &self.z2;
+
+        let e = Zq::random();
+        let z1 = &self.z1 + Mpz::from(&(&e * scalar));
+
+        e == self.e
+    }
+}
 // impl NiDkgOutput {
 //     pub fn from_combining(
 //         parties: Vec<usize>,
