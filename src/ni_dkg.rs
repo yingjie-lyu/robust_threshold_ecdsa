@@ -75,11 +75,25 @@ impl CurvePolynomial {
     }
 }
 
-
 /// TODO: refactor to use the `CurvePolynomial` struct
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClassGroupPolynomial {
-    pub coefficients: Vec<QFI>,
+    pub coeffs: Vec<QFI>,
+}
+
+impl ClassGroupPolynomial {
+    pub fn new(coeffs: Vec<QFI>) -> Self {
+        ClassGroupPolynomial { coeffs }
+    }
+
+    pub fn eval(&self, cl: &CL_HSMqk, x: &Zq) -> QFI {
+        let mut result = cl.power_of_h(&Mpz::from(0u64));
+        let x = Mpz::from(x);
+        for i in (0..self.coeffs.len()).rev() {
+            result = result.exp(cl, &x).compose(cl, &self.coeffs[i]);
+        }
+        result
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -90,22 +104,22 @@ pub struct CLMultiRecvCiphertext {
 
 impl CLMultiRecvCiphertext {
     pub fn new(
-        group: &CL_HSMqk,
+        cl: &CL_HSMqk,
         rng: &mut RandGen,
         keyring: &CLKeyRing,
         plaintexts: &BTreeMap<id, Zq>,
     ) -> (Self, Mpz) {
-        let r = rng.random_mpz(&group.encrypt_randomness_bound());
+        let r = rng.random_mpz(&cl.encrypt_randomness_bound());
 
-        let randomness = group.power_of_h(&r);
+        let randomness = cl.power_of_h(&r);
 
         let encryption = plaintexts
             .iter()
             .map(|(id, m)| {
-                let m_mpz = Mpz::from(m);
-                let f_pow_m = group.power_of_f(&m_mpz);
-                let pk_pow_r = keyring[id].exponentiation(group, &r);
-                (*id, f_pow_m.compose(&group, &pk_pow_r))
+                let m = Mpz::from(m);
+                let f_pow_m = cl.power_of_f(&m);
+                let pk_pow_r = keyring[id].exponentiation(cl, &r);
+                (*id, f_pow_m.compose(&cl, &pk_pow_r))
             })
             .collect();
 
@@ -122,11 +136,11 @@ impl CLMultiRecvCiphertext {
 type CLKeyRing = BTreeMap<id, PublicKey>;
 
 pub struct PubParams {
-    pub CL_group: CL_HSMqk,
+    pub cl: CL_HSMqk,
     pub t: u8, // minimal number of parties to reconstruct the secret
     // any polynomial should be of degree t-1
     pub n: u8,
-    pub CL_keyring: CLKeyRing,
+    pub cl_keyring: CLKeyRing,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -162,14 +176,15 @@ impl PvssDealing {
             coeffs: (0..pp.t).map(|_| Zq::random()).collect(),
         };
 
-        let shares = (1..=pp.n).into_iter()
+        let shares = (1..=pp.n)
+            .into_iter()
             .map(|id| (id, poly.eval(&Zq::from(id as u64))))
             .collect();
 
         let curve_polynomial = CurvePolynomial::from_exp(&poly, &curve_generator);
 
         let (encrypted_shares, r) =
-            CLMultiRecvCiphertext::new(&pp.CL_group, rng, &pp.CL_keyring, &shares);
+            CLMultiRecvCiphertext::new(&pp.cl, rng, &pp.cl_keyring, &shares);
 
         (
             PvssDealing {
@@ -192,21 +207,16 @@ impl PvssNizk {
         rng: &mut RandGen,
         curve_generator: &G,
     ) -> Self {
-        let u1 = rng.random_mpz(&pp.CL_group.encrypt_randomness_bound());
+        let u1 = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
         let u2 = Zq::random();
-        let U1 = &pp.CL_group.power_of_h(&u1);
+        let U1 = &pp.cl.power_of_h(&u1);
         let U2 = curve_generator * &u2;
         let gamma = PvssNizk::challenge1(pp, dealing, curve_generator);
 
-        let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0u64));
-        for (id, pk) in pp.CL_keyring.iter().rev() {
-            U3 = &U3
-                .exp(&pp.CL_group, &Mpz::from(&gamma))
-                .compose(&pp.CL_group, &pk.elt());
-        } // Horner's method for polynomial evaluation
-        U3 = &U3
-            .exp(&pp.CL_group, &u1)
-            .compose(&pp.CL_group, &pp.CL_group.power_of_f(&Mpz::from(&u2)));
+        let U3 = ClassGroupPolynomial::new(pp.cl_keyring.values().map(|pk| pk.elt()).collect())
+            .eval(&pp.cl, &gamma)
+            .exp(&pp.cl, &u1)
+            .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&u2)));
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3);
 
@@ -221,40 +231,34 @@ impl PvssNizk {
         let gamma = Self::challenge1(pp, dealing, curve_generator);
 
         // U1
-        let mut U1 = &pp.CL_group.power_of_h(&self.z1);
+        let mut U1 = &pp.cl.power_of_h(&self.z1);
         let U1d = &dealing
             .encrypted_shares
             .randomness
-            .exp(&pp.CL_group, &Mpz::from(&-self.e));
-        U1 = &U1.compose(&pp.CL_group, &U1d);
+            .exp(&pp.cl, &Mpz::from(&-self.e));
+        U1 = &U1.compose(&pp.cl, &U1d);
 
         // U2
         // curve polynomial defined by shares
-        let shares_on_curve = (1..=pp.n).into_iter()
+        let shares_on_curve = (1..=pp.n)
+            .into_iter()
             .map(|id| dealing.curve_polynomial.eval(&Zq::from(id as u64)))
             .collect();
         let shares_curve_poly = CurvePolynomial::new(shares_on_curve);
         let U2 = curve_generator * &self.z2 - shares_curve_poly.eval(&gamma) * &self.e;
 
-        // U3
-        let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
-        for (id, pk) in pp.CL_keyring.iter().rev() {
-            U3 = &U3
-                .exp(&pp.CL_group, &Mpz::from(&gamma))
-                .compose(&pp.CL_group, &pk.elt());
-        } // Horner's method for polynomial evaluation
-        U3 = &U3
-            .exp(&pp.CL_group, &self.z1)
-            .compose(&pp.CL_group, &pp.CL_group.power_of_f(&Mpz::from(&self.z2)));
+        
 
-        let mut U3d = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
+        let mut U3d = &pp.cl.power_of_h(&Mpz::from(0 as u64));
         for (id, E) in dealing.encrypted_shares.encryption.iter().rev() {
-            U3d = &U3d
-                .exp(&pp.CL_group, &Mpz::from(&gamma))
-                .compose(&pp.CL_group, &E);
+            U3d = &U3d.exp(&pp.cl, &Mpz::from(&gamma)).compose(&pp.cl, &E);
         } // Horner's method
 
-        U3 = &U3.compose(&pp.CL_group, &U3d.exp(&pp.CL_group, &Mpz::from(&-self.e)));
+        let U3 = ClassGroupPolynomial::new(pp.cl_keyring.values().map(|pk| pk.elt()).collect())
+            .eval(&pp.cl, &gamma)
+            .exp(&pp.cl, &self.z1)
+            .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&self.z2)))
+            .compose(&pp.cl, &U3d.exp(&pp.cl, &Mpz::from(&-self.e)));
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3);
         self.e == e
@@ -262,8 +266,8 @@ impl PvssNizk {
 
     fn challenge1(pp: &PubParams, dealing: &PvssDealing, curve_generator: &G) -> Zq {
         let mut hasher = Sha256::new();
-        hasher.update(&pp.CL_group.discriminant().to_bytes());
-        for (id, pk) in &pp.CL_keyring {
+        hasher.update(&pp.cl.discriminant().to_bytes());
+        for (id, pk) in &pp.cl_keyring {
             hasher.update(&id.to_be_bytes());
             hasher.update(&pk.to_bytes());
         }
@@ -308,11 +312,11 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
     let randomness = dealings
         .iter()
         .map(|d| d.encrypted_shares.randomness)
-        .reduce(|acc, R| acc.compose(&pp.CL_group, &R))
+        .reduce(|acc, R| acc.compose(&pp.cl, &R))
         .unwrap();
 
     let encryption = pp
-        .CL_keyring
+        .cl_keyring
         .iter()
         .map(|(id, _)| {
             let sum = dealings
@@ -321,9 +325,9 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
                     d.encrypted_shares
                         .encryption
                         .get(id)
-                        .unwrap_or(&pp.CL_group.power_of_h(&Mpz::from(0u64)))
+                        .unwrap_or(&pp.cl.power_of_h(&Mpz::from(0u64)))
                 })
-                .reduce(|acc, E| &acc.compose(&pp.CL_group, &E))
+                .reduce(|acc, E| &acc.compose(&pp.cl, &E))
                 .unwrap();
             (*id, *sum)
         })
@@ -356,7 +360,7 @@ impl MtaDealing {
         let randomness = pvss_result
             .encrypted_shares
             .randomness
-            .exp(&pp.CL_group, &Mpz::from(scalar));
+            .exp(&pp.cl, &Mpz::from(scalar));
 
         let multienc = &pvss_result.encrypted_shares.encryption;
 
@@ -366,10 +370,9 @@ impl MtaDealing {
         let encryption = multienc
             .iter()
             .map(|(id, E)| {
-                let res = E.exp(&pp.CL_group, &Mpz::from(scalar)).compose(
-                    &pp.CL_group,
-                    &pp.CL_group.power_of_f(&Mpz::from(&pairwise_shares[id])),
-                );
+                let res = E
+                    .exp(&pp.cl, &Mpz::from(scalar))
+                    .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&pairwise_shares[id])));
                 (*id, res)
             })
             .collect();
@@ -407,28 +410,25 @@ impl MtaNizk {
         scalar: &Zq,
         pairwise_shares: &BTreeMap<id, Zq>,
     ) -> Self {
-        let u1 = rng.random_mpz(&pp.CL_group.encrypt_randomness_bound());
+        let u1 = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
         let u2 = Zq::random();
         // let gamma = Self::challenge1(pp, pvss_result, mta_result, curve_generator);
         let gamma = Zq::random();
 
         let u1_modq = Zq::from(BigInt::from_bytes(&u1.to_bytes()) % Zq::group_order());
         let U1 = G::generator() * &u1_modq;
-        let U2 = pvss_result
-            .encrypted_shares
-            .randomness
-            .exp(&pp.CL_group, &u1);
+        let U2 = pvss_result.encrypted_shares.randomness.exp(&pp.cl, &u1);
 
         // U3
-        let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
+        let mut U3 = &pp.cl.power_of_h(&Mpz::from(0 as u64));
         for (id, _) in mta_result.encryption.iter().rev() {
             U3 = &U3
-                .exp(&pp.CL_group, &Mpz::from(&gamma))
-                .compose(&pp.CL_group, &pvss_result.encrypted_shares.encryption[&id]);
-        } 
+                .exp(&pp.cl, &Mpz::from(&gamma))
+                .compose(&pp.cl, &pvss_result.encrypted_shares.encryption[&id]);
+        }
         U3 = &U3
-            .exp(&pp.CL_group, &u1)
-            .compose(&pp.CL_group, &pp.CL_group.power_of_f(&Mpz::from(&u2)));
+            .exp(&pp.cl, &u1)
+            .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&u2)));
 
         // compute original macs from pvss_result.curve_polynomial
         // TODO: profile, and may make sense to optimize by reusing the curve_macs from MtaDealing.new
@@ -474,30 +474,28 @@ impl MtaNizk {
         let U1 = G::generator() * z1_modq - scalar_pub * &self.e;
 
         // U2
-        let U2d = mta_result.randomness.exp(&pp.CL_group, &Mpz::from(&-self.e));
+        let U2d = mta_result.randomness.exp(&pp.cl, &Mpz::from(&-self.e));
         let U2 = pvss_result
             .encrypted_shares
             .randomness
-            .exp(&pp.CL_group, &self.z1)
-            .compose(&pp.CL_group, &U2d);
+            .exp(&pp.cl, &self.z1)
+            .compose(&pp.cl, &U2d);
 
         // U3
-        let mut U3 = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
-        let mut U3d = &pp.CL_group.power_of_h(&Mpz::from(0 as u64));
+        let mut U3 = &pp.cl.power_of_h(&Mpz::from(0 as u64));
+        let mut U3d = &pp.cl.power_of_h(&Mpz::from(0 as u64));
         for (id, E) in mta_result.encryption.iter().rev() {
             U3 = &U3
-                .exp(&pp.CL_group, &Mpz::from(&gamma))
-                .compose(&pp.CL_group, &pvss_result.encrypted_shares.encryption[&id]);
+                .exp(&pp.cl, &Mpz::from(&gamma))
+                .compose(&pp.cl, &pvss_result.encrypted_shares.encryption[&id]);
 
-            U3d = &U3d
-                .exp(&pp.CL_group, &Mpz::from(&gamma))
-                .compose(&pp.CL_group, &E);
-        } 
-        U3d = &U3d.exp(&pp.CL_group, &Mpz::from(&-self.e));
+            U3d = &U3d.exp(&pp.cl, &Mpz::from(&gamma)).compose(&pp.cl, &E);
+        }
+        U3d = &U3d.exp(&pp.cl, &Mpz::from(&-self.e));
         U3 = &U3
-            .exp(&pp.CL_group, &self.z1)
-            .compose(&pp.CL_group, &U3d)
-            .compose(&pp.CL_group, &pp.CL_group.power_of_f(&Mpz::from(&self.z2)));
+            .exp(&pp.cl, &self.z1)
+            .compose(&pp.cl, &U3d)
+            .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&self.z2)));
 
         // U4
         let orig_curve_macs = mta_result
