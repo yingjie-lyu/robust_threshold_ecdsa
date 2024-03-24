@@ -24,7 +24,7 @@ use crate::lagrange_coeff;
 type Zq = Scalar<Secp256k1>;
 type G = Point<Secp256k1>;
 
-type id = u8;
+type Id = u8;
 
 /// Polynomial defined over Zq, with coefficients in ascending order
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -99,7 +99,7 @@ impl ClassGroupPolynomial {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CLMultiRecvCiphertext {
     pub randomness: QFI,
-    pub encryption: BTreeMap<id, QFI>,
+    pub encryption: BTreeMap<Id, QFI>,
 }
 
 impl CLMultiRecvCiphertext {
@@ -107,7 +107,7 @@ impl CLMultiRecvCiphertext {
         cl: &CL_HSMqk,
         rng: &mut RandGen,
         keyring: &CLKeyRing,
-        plaintexts: &BTreeMap<id, Zq>,
+        plaintexts: &BTreeMap<Id, Zq>,
     ) -> (Self, Mpz) {
         let r = rng.random_mpz(&cl.encrypt_randomness_bound());
 
@@ -133,13 +133,13 @@ impl CLMultiRecvCiphertext {
     }
 }
 
-type CLKeyRing = BTreeMap<id, PublicKey>;
+type CLKeyRing = BTreeMap<Id, PublicKey>;
 
 pub struct PubParams {
     pub cl: CL_HSMqk,
-    pub t: u8, // minimal number of parties to reconstruct the secret
+    pub t: Id, // minimal number of parties to reconstruct the secret
     // any polynomial should be of degree t-1
-    pub n: u8,
+    pub n: Id,
     pub cl_keyring: CLKeyRing,
 }
 
@@ -170,7 +170,7 @@ impl PvssDealing {
         pp: &PubParams,
         rng: &mut RandGen,
         curve_generator: &G,
-    ) -> (Self, Mpz, Polynomial, BTreeMap<id, Zq>) {
+    ) -> (Self, Mpz, Polynomial, BTreeMap<Id, Zq>) {
         // make coefficients of a (t-1)-degree polynomial, and derive the shares
         let poly = Polynomial {
             coeffs: (0..pp.t).map(|_| Zq::random()).collect(),
@@ -202,7 +202,7 @@ impl PvssNizk {
     pub fn prove(
         dealing: &PvssDealing,
         r: &Mpz,
-        shares: &BTreeMap<id, Zq>,
+        shares: &BTreeMap<Id, Zq>,
         pp: &PubParams,
         rng: &mut RandGen,
         curve_generator: &G,
@@ -222,7 +222,7 @@ impl PvssNizk {
 
         let z1 = u1 + Mpz::from(&e) * r;
         let poly = Polynomial::new(shares.values().cloned().collect());
-        let z2 = u2 + e * poly.eval(&gamma);
+        let z2 = u2 + &e * poly.eval(&gamma);
 
         PvssNizk { e, z1, z2 }
     }
@@ -231,12 +231,11 @@ impl PvssNizk {
         let gamma = Self::challenge1(pp, dealing, curve_generator);
 
         // U1
-        let mut U1 = &pp.cl.power_of_h(&self.z1);
         let U1d = &dealing
             .encrypted_shares
             .randomness
-            .exp(&pp.cl, &Mpz::from(&-self.e));
-        U1 = &U1.compose(&pp.cl, &U1d);
+            .exp(&pp.cl, &Mpz::from(&-&self.e));
+        let U1 = &pp.cl.power_of_h(&self.z1).compose(&pp.cl, &U1d);
 
         // U2
         // curve polynomial defined by shares
@@ -247,18 +246,22 @@ impl PvssNizk {
         let shares_curve_poly = CurvePolynomial::new(shares_on_curve);
         let U2 = curve_generator * &self.z2 - shares_curve_poly.eval(&gamma) * &self.e;
 
-        
-
-        let mut U3d = &pp.cl.power_of_h(&Mpz::from(0 as u64));
-        for (id, E) in dealing.encrypted_shares.encryption.iter().rev() {
-            U3d = &U3d.exp(&pp.cl, &Mpz::from(&gamma)).compose(&pp.cl, &E);
-        } // Horner's method
+        // U3
+        let U3d = ClassGroupPolynomial::new(
+            dealing
+                .encrypted_shares
+                .encryption
+                .values()
+                .cloned()
+                .collect(),
+        )
+        .eval(&pp.cl, &gamma);
 
         let U3 = ClassGroupPolynomial::new(pp.cl_keyring.values().map(|pk| pk.elt()).collect())
             .eval(&pp.cl, &gamma)
             .exp(&pp.cl, &self.z1)
             .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&self.z2)))
-            .compose(&pp.cl, &U3d.exp(&pp.cl, &Mpz::from(&-self.e)));
+            .compose(&pp.cl, &U3d.exp(&pp.cl, &Mpz::from(&-&self.e)));
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3);
         self.e == e
@@ -302,7 +305,7 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
             .map(|i| {
                 let sum = dealings
                     .iter()
-                    .map(|d| d.curve_polynomial.coeffs[i as usize])
+                    .map(|d| &d.curve_polynomial.coeffs[i as usize])
                     .sum::<G>();
                 sum
             })
@@ -311,9 +314,10 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
 
     let randomness = dealings
         .iter()
-        .map(|d| d.encrypted_shares.randomness)
+        .map(|d| d.encrypted_shares.randomness.clone())
         .reduce(|acc, R| acc.compose(&pp.cl, &R))
-        .unwrap();
+        .unwrap()
+        .clone();
 
     let encryption = pp
         .cl_keyring
@@ -326,10 +330,12 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
                         .encryption
                         .get(id)
                         .unwrap_or(&pp.cl.power_of_h(&Mpz::from(0u64)))
+                        .clone()
                 })
-                .reduce(|acc, E| &acc.compose(&pp.cl, &E))
-                .unwrap();
-            (*id, *sum)
+                .reduce(|acc, E| acc.compose(&pp.cl, &E))
+                .unwrap()
+                .clone();
+            (*id, sum)
         })
         .collect();
 
@@ -344,8 +350,8 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
 
 pub struct MtaDealing {
     pub randomness: QFI,
-    pub encryption: BTreeMap<id, QFI>,
-    pub curve_macs: BTreeMap<id, G>,
+    pub encryption: BTreeMap<Id, QFI>,
+    pub curve_macs: BTreeMap<Id, G>,
 }
 
 impl MtaDealing {
@@ -356,7 +362,7 @@ impl MtaDealing {
         pvss_result: &PvssDealing,
         scalar: &Zq,
         curve_generator: &G,
-    ) -> (Self, BTreeMap<id, Zq>) {
+    ) -> (Self, BTreeMap<Id, Zq>) {
         let randomness = pvss_result
             .encrypted_shares
             .randomness
@@ -364,7 +370,7 @@ impl MtaDealing {
 
         let multienc = &pvss_result.encrypted_shares.encryption;
 
-        let pairwise_shares: BTreeMap<id, Zq> =
+        let pairwise_shares: BTreeMap<Id, Zq> =
             multienc.iter().map(|(&id, _)| (id, Zq::random())).collect();
 
         let encryption = multienc
@@ -380,7 +386,7 @@ impl MtaDealing {
         let curve_macs = multienc
             .iter()
             .map(|(&id, _)| (id, pvss_result.curve_polynomial.eval(&Zq::from(id as u64))))
-            .map(|(id, mac)| (id, scalar * mac + curve_generator * pairwise_shares[&id]))
+            .map(|(id, mac)| (id, scalar * mac + curve_generator * &pairwise_shares[&id]))
             .collect();
 
         (
@@ -408,7 +414,7 @@ impl MtaNizk {
         curve_generator: &G,
         rng: &mut RandGen,
         scalar: &Zq,
-        pairwise_shares: &BTreeMap<id, Zq>,
+        pairwise_shares: &BTreeMap<Id, Zq>,
     ) -> Self {
         let u1 = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
         let u2 = Zq::random();
@@ -453,7 +459,7 @@ impl MtaNizk {
         for (id, b) in pairwise_shares.iter() {
             z2 = &z2 + b * &gamma;
         }
-        z2 = &u2 + e * z2;
+        z2 = &u2 + &e * z2;
 
         Self { e, z1, z2 }
     }
@@ -465,7 +471,7 @@ impl MtaNizk {
         mta_result: &MtaDealing,
         curve_generator: &G,
         scalar_pub: &G,
-        pairwise_shares: &BTreeMap<id, Zq>,
+        pairwise_shares: &BTreeMap<Id, Zq>,
     ) -> bool {
         // let gamma = Self::challenge1(pp, pvss_result, mta_result, curve_generator);
         let gamma = Zq::random();
