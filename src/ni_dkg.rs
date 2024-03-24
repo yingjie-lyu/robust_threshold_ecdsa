@@ -75,6 +75,8 @@ impl CurvePolynomial {
     }
 }
 
+
+/// TODO: refactor to use the `CurvePolynomial` struct
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClassGroupPolynomial {
     pub coefficients: Vec<QFI>,
@@ -160,10 +162,8 @@ impl PvssDealing {
             coeffs: (0..pp.t).map(|_| Zq::random()).collect(),
         };
 
-        let shares = pp
-            .CL_keyring
-            .iter()
-            .map(|(&id, _)| (id, poly.eval(&Zq::from(id as u64))))
+        let shares = (1..=pp.n).into_iter()
+            .map(|id| (id, poly.eval(&Zq::from(id as u64))))
             .collect();
 
         let curve_polynomial = CurvePolynomial::from_exp(&poly, &curve_generator);
@@ -230,11 +230,9 @@ impl PvssNizk {
 
         // U2
         // curve polynomial defined by shares
-        let shares_on_curve = pp
-            .CL_keyring
-            .iter()
-            .map(|(&id, _)| dealing.curve_polynomial.eval(&Zq::from(id as u64)))
-            .collect::<Vec<G>>();
+        let shares_on_curve = (1..=pp.n).into_iter()
+            .map(|id| dealing.curve_polynomial.eval(&Zq::from(id as u64)))
+            .collect();
         let shares_curve_poly = CurvePolynomial::new(shares_on_curve);
         let U2 = curve_generator * &self.z2 - shares_curve_poly.eval(&gamma) * &self.e;
 
