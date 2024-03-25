@@ -86,6 +86,15 @@ impl ClassGroupPolynomial {
         Self { coeffs }
     }
 
+    /// Creates a class group polynomial with only some coefficients specified.
+    pub fn new1(cl: &CL_HSMqk, degree: Id, some_coeffs: &BTreeMap<Id, QFI>) -> Self {
+        let mut coeffs = Vec::with_capacity(degree as usize + 1);
+        for i in 0..=degree {
+            coeffs[i as usize] = some_coeffs.get(&i).unwrap_or(&cl.one()).clone();
+        }
+        Self { coeffs }
+    }
+
     pub fn eval(&self, cl: &CL_HSMqk, x: &Zq) -> QFI {
         let mut result = cl.one();
         let x = Mpz::from(x);
@@ -116,8 +125,7 @@ impl CLMultiRecvCiphertext {
         let encryption = plaintexts
             .iter()
             .map(|(id, m)| {
-                let m = Mpz::from(m);
-                let f_pow_m = cl.power_of_f(&m);
+                let f_pow_m = cl.power_of_f(&Mpz::from(m));
                 let pk_pow_r = keyring[id].exponentiation(cl, &r);
                 (*id, f_pow_m.compose(&cl, &pk_pow_r))
             })
@@ -213,7 +221,7 @@ impl PvssNizk {
         let U2 = curve_generator * &u2;
         let gamma = PvssNizk::challenge1(pp, dealing, curve_generator);
 
-        let U3 = ClassGroupPolynomial::new(pp.cl_keyring.values().map(|pk| pk.elt()).collect())
+        let U3 = ClassGroupPolynomial::new1(&pp.cl, pp.n, &pp.cl_keyring.iter().map(|(&id, pk)| (id, pk.elt())).collect())
             .eval(&pp.cl, &gamma)
             .exp(&pp.cl, &u1)
             .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&u2)));
@@ -247,25 +255,15 @@ impl PvssNizk {
         let U2 = curve_generator * &self.z2 - shares_curve_poly.eval(&gamma) * &self.e;
 
         // U3
-        let U3d_coeffs = (1..=pp.n).into_iter().map(|id| {
-            dealing.encrypted_shares.encryption.get(&id).unwrap_or(&pp.cl.one()).clone()
-        });
+        let U3d = ClassGroupPolynomial::new1(&pp.cl, pp.n, &dealing.encrypted_shares.encryption)
+            .eval(&pp.cl, &gamma)
+            .exp(&pp.cl, &Mpz::from(&-&self.e));
 
-        let U3d = ClassGroupPolynomial::new(
-            dealing
-                .encrypted_shares
-                .encryption
-                .values()
-                .cloned()
-                .collect(),
-        )
-        .eval(&pp.cl, &gamma);
-
-        let U3 = ClassGroupPolynomial::new(pp.cl_keyring.values().map(|pk| pk.elt()).collect())
+        let U3 = ClassGroupPolynomial::new1(&pp.cl, pp.n, &pp.cl_keyring.iter().map(|(&id, pk)| (id, pk.elt())).collect())
             .eval(&pp.cl, &gamma)
             .exp(&pp.cl, &self.z1)
             .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&self.z2)))
-            .compose(&pp.cl, &U3d.exp(&pp.cl, &Mpz::from(&-&self.e)));
+            .compose(&pp.cl, &U3d);
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3);
         self.e == e
@@ -323,7 +321,9 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
         .unwrap()
         .clone();
 
-    let encryption = (1..=pp.n).into_iter().map(|id| {
+    let encryption = (1..=pp.n)
+        .into_iter()
+        .map(|id| {
             let sum = dealings
                 .iter()
                 .map(|d| {
@@ -426,19 +426,14 @@ impl MtaNizk {
         let U1 = G::generator() * &u1_modq;
         let U2 = pvss_result.encrypted_shares.randomness.exp(&pp.cl, &u1);
 
-        // U3
-        let mut U3 = &pp.cl.one();
-        for (id, _) in mta_result.encryption.iter().rev() {
-            U3 = &U3
-                .exp(&pp.cl, &Mpz::from(&gamma))
-                .compose(&pp.cl, &pvss_result.encrypted_shares.encryption[&id]);
-        }
-        U3 = &U3
+
+        let U3 = ClassGroupPolynomial::new1(&pp.cl, pp.n, &mta_result.encryption)
+            .eval(&pp.cl, &gamma)
             .exp(&pp.cl, &u1)
             .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&u2)));
 
         // compute original macs from pvss_result.curve_polynomial
-        // TODO: profile, and may make sense to optimize by reusing the curve_macs from MtaDealing.new
+        // TODO: profile, and may make sense to reuse what's previously computed
         let orig_curve_macs = mta_result
             .curve_macs
             .iter()
