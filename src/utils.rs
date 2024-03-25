@@ -56,6 +56,8 @@ pub struct CurvePolynomial {
 }
 
 impl CurvePolynomial {
+    // trivial constructor makes very little sense.
+    // should refactor to take a BTreeMap<Id, G> instead
     pub fn new(coeffs: Vec<G>) -> Self {
         Self { coeffs }
     }
@@ -229,7 +231,7 @@ impl PvssNizk {
         let e = Self::challenge2(&gamma, &U1, &U2, &U3);
 
         let z1 = u1 + Mpz::from(&e) * r;
-        let poly = Polynomial::new(shares.values().cloned().collect());
+        let poly = Polynomial::new(shares.values().cloned().collect()); // missing const term
         let z2 = u2 + &e * poly.eval(&gamma);
 
         Self { e, z1, z2 }
@@ -427,7 +429,7 @@ impl MtaNizk {
         let U2 = pvss_result.encrypted_shares.randomness.exp(&pp.cl, &u1);
 
 
-        let U3 = ClassGroupPolynomial::new1(&pp.cl, pp.n, &mta_result.encryption)
+        let U3 = ClassGroupPolynomial::new1(&pp.cl, pp.n, &pvss_result.encrypted_shares.encryption)
             .eval(&pp.cl, &gamma)
             .exp(&pp.cl, &u1)
             .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&u2)));
@@ -460,6 +462,8 @@ impl MtaNizk {
         Self { e, z1, z2 }
     }
 
+
+    
     pub fn verify(
         &self,
         pp: &PubParams,
