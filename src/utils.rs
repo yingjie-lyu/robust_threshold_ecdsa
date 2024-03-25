@@ -319,23 +319,20 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
         .unwrap()
         .clone();
 
-    let encryption = pp
-        .cl_keyring
-        .iter()
-        .map(|(id, _)| {
+    let encryption = (1..=pp.n).into_iter().map(|id| {
             let sum = dealings
                 .iter()
                 .map(|d| {
                     d.encrypted_shares
                         .encryption
-                        .get(id)
+                        .get(&id)
                         .unwrap_or(&pp.cl.power_of_h(&Mpz::from(0u64)))
                         .clone()
                 })
                 .reduce(|acc, E| acc.compose(&pp.cl, &E))
                 .unwrap()
                 .clone();
-            (*id, sum)
+            (id, sum)
         })
         .collect();
 

@@ -9,7 +9,7 @@ use curv::{
     BigInt,
 };
 use futures::SinkExt;
-use ni_dkg::{PvssDealing, NiDkgOutput};
+use utils::{PvssDealing, NiDkgOutput};
 use round_based::{
     rounds_router::simple_store::RoundInput, rounds_router::RoundsRouter, simulation::Simulation,
     Delivery, Mpc, MpcParty, Outgoing, PartyIndex, ProtocolMessage,
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub mod ni_dkg;
+pub mod utils;
 pub mod tests;
 
 // Pre-signing phase consists of 3 rounds: NonceGen, MtAwc, & PreSignFinal;

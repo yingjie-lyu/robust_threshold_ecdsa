@@ -5,7 +5,7 @@ use curv::{
     BigInt,
 };
 use futures::SinkExt;
-use crate::ni_dkg::{PvssDealing, NiDkgOutput};
+use crate::utils::{PvssDealing, NiDkgOutput};
 use crate::*;
 use round_based::{
     rounds_router::simple_store::RoundInput, rounds_router::RoundsRouter, simulation::Simulation,
