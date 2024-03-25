@@ -34,7 +34,7 @@ pub struct Polynomial {
 
 impl Polynomial {
     pub fn new(coeffs: Vec<Zq>) -> Self {
-        Polynomial { coeffs }
+        Self { coeffs }
     }
 
     pub fn degree(&self) -> usize {
@@ -57,11 +57,11 @@ pub struct CurvePolynomial {
 
 impl CurvePolynomial {
     pub fn new(coeffs: Vec<G>) -> Self {
-        CurvePolynomial { coeffs }
+        Self { coeffs }
     }
 
     pub fn from_exp(polynomial: &Polynomial, generator: &G) -> Self {
-        CurvePolynomial {
+        Self {
             coeffs: polynomial.coeffs.iter().map(|x| generator * x).collect(),
         }
     }
@@ -83,11 +83,11 @@ pub struct ClassGroupPolynomial {
 
 impl ClassGroupPolynomial {
     pub fn new(coeffs: Vec<QFI>) -> Self {
-        ClassGroupPolynomial { coeffs }
+        Self { coeffs }
     }
 
     pub fn eval(&self, cl: &CL_HSMqk, x: &Zq) -> QFI {
-        let mut result = cl.power_of_h(&Mpz::from(0u64));
+        let mut result = cl.one();
         let x = Mpz::from(x);
         for i in (0..self.coeffs.len()).rev() {
             result = result.exp(cl, &x).compose(cl, &self.coeffs[i]);
@@ -124,7 +124,7 @@ impl CLMultiRecvCiphertext {
             .collect();
 
         (
-            CLMultiRecvCiphertext {
+            Self {
                 randomness,
                 encryption,
             },
@@ -187,7 +187,7 @@ impl PvssDealing {
             CLMultiRecvCiphertext::new(&pp.cl, rng, &pp.cl_keyring, &shares);
 
         (
-            PvssDealing {
+            Self {
                 curve_polynomial,
                 encrypted_shares,
             },
@@ -224,7 +224,7 @@ impl PvssNizk {
         let poly = Polynomial::new(shares.values().cloned().collect());
         let z2 = u2 + &e * poly.eval(&gamma);
 
-        PvssNizk { e, z1, z2 }
+        Self { e, z1, z2 }
     }
 
     pub fn verify(&self, dealing: &PvssDealing, pp: &PubParams, curve_generator: &G) -> bool {
@@ -247,6 +247,10 @@ impl PvssNizk {
         let U2 = curve_generator * &self.z2 - shares_curve_poly.eval(&gamma) * &self.e;
 
         // U3
+        let U3d_coeffs = (1..=pp.n).into_iter().map(|id| {
+            dealing.encrypted_shares.encryption.get(&id).unwrap_or(&pp.cl.one()).clone()
+        });
+
         let U3d = ClassGroupPolynomial::new(
             dealing
                 .encrypted_shares
@@ -326,7 +330,7 @@ pub fn pvss_aggregate(pp: &PubParams, dealings: &[PvssDealing]) -> PvssDealing {
                     d.encrypted_shares
                         .encryption
                         .get(&id)
-                        .unwrap_or(&pp.cl.power_of_h(&Mpz::from(0u64)))
+                        .unwrap_or(&pp.cl.one())
                         .clone()
                 })
                 .reduce(|acc, E| acc.compose(&pp.cl, &E))
@@ -423,7 +427,7 @@ impl MtaNizk {
         let U2 = pvss_result.encrypted_shares.randomness.exp(&pp.cl, &u1);
 
         // U3
-        let mut U3 = &pp.cl.power_of_h(&Mpz::from(0 as u64));
+        let mut U3 = &pp.cl.one();
         for (id, _) in mta_result.encryption.iter().rev() {
             U3 = &U3
                 .exp(&pp.cl, &Mpz::from(&gamma))
@@ -485,8 +489,8 @@ impl MtaNizk {
             .compose(&pp.cl, &U2d);
 
         // U3
-        let mut U3 = &pp.cl.power_of_h(&Mpz::from(0 as u64));
-        let mut U3d = &pp.cl.power_of_h(&Mpz::from(0 as u64));
+        let mut U3 = &pp.cl.one();
+        let mut U3d = &pp.cl.one();
         for (id, E) in mta_result.encryption.iter().rev() {
             U3 = &U3
                 .exp(&pp.cl, &Mpz::from(&gamma))

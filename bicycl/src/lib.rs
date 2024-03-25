@@ -450,6 +450,9 @@ impl CL_HSMqk {
         }
     }
 
+    pub fn one(&self) -> QFI {
+        self.power_of_h(&Mpz::from(0u64))
+    }
     
     pub fn power_of_h(&self, e: &Mpz) -> QFI {
         let mut result = BICYCL::QFI::new().within_box();
