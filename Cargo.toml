@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-round-based = { version = "0.2", features = ["dev"] }
+round-based = { version = "0.2", features = ["dev", "derive"] }
 curv-kzen = { version = "0.10", default-features = true }
 ecdsa = "0.16.6"
 tokio = { version = "1.15", features = ["full"] }

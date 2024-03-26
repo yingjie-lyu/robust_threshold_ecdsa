@@ -2,7 +2,7 @@ use bicycl::{CL_HSMqk, CipherText, ClearText, Mpz, PublicKey, RandGen, SecretKey
 use curv::{
     arithmetic::{BasicOps, Converter, Samplable},
     cryptographic_primitives::hashing::merkle_tree::Proof,
-    elliptic::curves::{bls12_381::scalar, Point, Scalar, Secp256k1},
+    elliptic::curves::{Point, Scalar, Secp256k1},
     BigInt,
 };
 use ecdsa::elliptic_curve::point;
@@ -34,10 +34,11 @@ pub struct Polynomial {
 
 impl Polynomial {
     pub fn new(degree: Id, some_coeffs: &BTreeMap<Id, Zq>) -> Self {
-        let mut coeffs = Vec::with_capacity(degree as usize + 1);
-        for i in 0..=degree {
-            coeffs[i as usize] = some_coeffs.get(&i).unwrap_or(&Zq::zero()).clone();
-        }
+        let mut coeffs = vec![Zq::zero(); degree as usize + 1];
+        some_coeffs
+            .iter()
+            .take_while(|(&id, _)| id <= degree)
+            .for_each(|(&id, coeff)| coeffs[id as usize] = coeff.clone());
         Self { coeffs }
     }
 
@@ -59,10 +60,11 @@ impl CurvePolynomial {
     // trivial constructor makes very little sense.
     // should refactor to take a BTreeMap<Id, G> instead
     pub fn new(degree: Id, some_coeffs: &BTreeMap<Id, G>) -> Self {
-        let mut coeffs = Vec::with_capacity(degree as usize + 1);
-        for i in 0..=degree {
-            coeffs[i as usize] = some_coeffs.get(&i).unwrap_or(&G::zero()).clone();
-        }
+        let mut coeffs = vec![G::zero(); degree as usize + 1];
+        some_coeffs
+            .iter()
+            .take_while(|(&id, _)| id <= degree)
+            .for_each(|(&id, coeff)| coeffs[id as usize] = coeff.clone());
         Self { coeffs }
     }
 
@@ -94,10 +96,11 @@ pub struct QFPolynomial {
 impl QFPolynomial {
     /// Creates a class group polynomial with only some coefficients specified.
     pub fn new(cl: &CL_HSMqk, degree: Id, some_coeffs: &BTreeMap<Id, QFI>) -> Self {
-        let mut coeffs = Vec::with_capacity(degree as usize + 1);
-        for i in 0..=degree {
-            coeffs[i as usize] = some_coeffs.get(&i).unwrap_or(&cl.one()).clone();
-        }
+        let mut coeffs = vec![cl.one(); degree as usize + 1];
+        some_coeffs
+            .iter()
+            .take_while(|(&id, _)| id <= degree)
+            .for_each(|(&id, coeff)| coeffs[id as usize] = coeff.clone());
         Self { coeffs }
     }
 
@@ -169,8 +172,6 @@ pub struct PvssNizk {
     pub z1: Mpz,
     pub z2: Zq,
 }
-
-
 
 impl PvssDealing {
     pub fn new(
@@ -449,7 +450,13 @@ impl MtaNizk {
         scalar: &Zq,
         pairwise_shares: &BTreeMap<Id, Zq>,
     ) -> Self {
-        let gamma = Self::challenge1(pp, pvss_result, mta_dealing, curve_generator, &(curve_generator * scalar));
+        let gamma = Self::challenge1(
+            pp,
+            pvss_result,
+            mta_dealing,
+            curve_generator,
+            &(curve_generator * scalar),
+        );
 
         let u1 = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
         let u2 = Zq::random();
@@ -468,7 +475,7 @@ impl MtaNizk {
         let U4 = CurvePolynomial::new(pp.n, &pvss_result.curve_macs).eval(&gamma) * &u1_modq
             + curve_generator * &u2;
 
-        let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4); 
+        let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
         let z1 = &u1 + Mpz::from(&(&e * scalar));
         let z2 = Polynomial::new(pp.n, pairwise_shares).eval(&gamma) * &e + &u2;
 
@@ -518,11 +525,17 @@ impl MtaNizk {
             + CurvePolynomial::new(pp.n, &pvss_result.curve_macs).eval(&gamma) * &z1_modq
             - CurvePolynomial::new(pp.n, &mta_dealing.curve_macs).eval(&gamma) * &self.e;
 
-        let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4); 
+        let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
         e == self.e
     }
 
-    fn challenge1(pp: &PubParams, pvss_result: &JointPvssResult, mta_dealing: &MtaDealing, curve_generator: &G, scalar_pub: &G) -> Zq {
+    fn challenge1(
+        pp: &PubParams,
+        pvss_result: &JointPvssResult,
+        mta_dealing: &MtaDealing,
+        curve_generator: &G,
+        scalar_pub: &G,
+    ) -> Zq {
         let mut hasher = Sha256::new();
         hasher.update(pp.cl.discriminant().to_bytes());
         hasher.update(pvss_result.shares_ciphertext.randomness.to_bytes());
@@ -561,16 +574,36 @@ impl MtaNizk {
     }
 }
 
+pub struct DleqNizk {
+    pub e: Zq,
+    pub z: Zq,
+}
 
+impl DleqNizk {
+    pub fn prove(gen1: &G, pow1: &G, gen2: &G, pow2: &G, x: &Zq) -> Self {
+        let u = Zq::random();
+        let U1 = gen1 * &u;
+        let U2 = gen2 * &u;
+        let e = Self::challenge(gen1, pow1, gen2, pow2, &U1, &U2);
+        let z = &u + &e * x;
+        Self { e, z }
+    }
 
+    pub fn verify(&self, gen1: &G, pow1: &G, gen2: &G, pow2: &G) -> bool {
+        let U1 = gen1 * &self.z - pow1 * &self.e;
+        let U2 = gen2 * &self.z - pow2 * &self.e;
+        let e = Self::challenge(gen1, pow1, gen2, pow2, &U1, &U2);
+        e == self.e
+    }
 
-
-
-
-
-
-
-
+    fn challenge(gen1: &G, pow1: &G, gen2: &G, pow2: &G, U1: &G, U2: &G) -> Zq {
+        let mut hasher = Sha256::new();
+        for point in &[gen1, pow1, gen2, pow2, U1, U2] {
+            hasher.update(point.to_bytes(false));
+        }
+        Zq::from_bytes(&hasher.finalize()[..16]).unwrap()
+    }
+}
 
 
 // #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
