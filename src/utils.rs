@@ -313,6 +313,7 @@ impl PvssNizk {
 }
 
 /// Aggregated PVSS result
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JointPvssResult {
     pub shares_ciphertext: CLMultiRecvCiphertext,
     pub curve_polynomial: CurvePolynomial,
@@ -381,6 +382,7 @@ impl JointPvssResult {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MtaDealing {
     pub shares_ciphertext: CLMultiRecvCiphertext,
     pub curve_macs: BTreeMap<Id, G>,
@@ -434,6 +436,7 @@ impl MtaDealing {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MtaNizk {
     pub e: Zq,
     pub z1: Mpz,
@@ -574,6 +577,7 @@ impl MtaNizk {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DleqNizk {
     pub e: Zq,
     pub z: Zq,
@@ -604,7 +608,6 @@ impl DleqNizk {
         Zq::from_bytes(&hasher.finalize()[..16]).unwrap()
     }
 }
-
 
 // #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 // pub struct NiDkgOutput {
@@ -691,51 +694,52 @@ impl DleqNizk {
 // below are code for testing
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
-pub enum Msg {
+pub enum DkgMsg {
     PvssMsg((PvssDealing, PvssNizk)),
+    DleqMsg((G, DleqNizk)),
 }
 
-pub async fn protocol_ni_dkg<M>(
+pub async fn uniform_distributed_key_generation<M>(
     party: M,
-    myid: PartyIndex,
-    t: usize,
-    n: usize,
-    clgroup: CL_HSMqk,
-    mut rand_gen: RandGen,
-    clpk: BTreeMap<usize, PublicKey>,
+    my_id: PartyIndex, // in 1..=n; subtract one before passing into round-based crate
+    pp: &PubParams,
+    rng: &mut RandGen,
     mysk: SecretKey,
-) -> Result<NiDkgOutput, Error<M::ReceiveError, M::SendError>>
+) -> Result<JointPvssResult, Error<M::ReceiveError, M::SendError>>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = DkgMsg>,
 {
     let MpcParty { delivery, .. } = party.into_party();
     let (incoming, mut outgoing) = delivery.split();
-    let mut rounds = RoundsRouter::<Msg>::builder();
-    let round1 = rounds.add_round(RoundInput::<PvssDealing>::broadcast(
-        myid,
-        n.try_into().unwrap(),
+    let mut rounds = RoundsRouter::<DkgMsg>::builder();
+    let round1 = rounds.add_round(RoundInput::<(PvssDealing, PvssNizk)>::broadcast(
+        my_id - 1,
+        pp.n as u16,
     ));
     let mut rounds = rounds.listen(incoming);
 
-    let my_ni_dkg_msg = PvssDealing::new(t, (0..n).collect(), &clgroup, &mut rand_gen, &clpk);
+    let (pvss_dealing, r, poly, shares) = PvssDealing::new(pp, rng, &G::base_point2());
+    let pvss_nizk = PvssNizk::prove(&pvss_dealing, &r, &shares, pp, rng, &G::base_point2());
 
     outgoing
-        .send(Outgoing::broadcast(Msg::PvssMsg(my_ni_dkg_msg.clone())))
-        .await
-        .unwrap();
+        .send(Outgoing::broadcast(DkgMsg::PvssMsg((
+            pvss_dealing,
+            pvss_nizk,
+        ))))
+        .await?;
 
     let all_messages = rounds
         .complete(round1)
         .await
         .unwrap()
-        .into_vec_including_me(my_ni_dkg_msg);
+        .into_vec_including_me(pvss_dealing); // (0..n)
 
     Ok(NiDkgOutput::from_combining(
         (0..n).collect(),
         &all_messages,
-        myid.into(),
+        my_id.into(),
         clgroup,
-        &mut rand_gen,
+        &mut rng,
         false,
         clpk,
         &mysk,
