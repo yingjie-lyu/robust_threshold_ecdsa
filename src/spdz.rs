@@ -222,10 +222,9 @@ pub fn simulate_pp(n: Id, t: Id) -> (PubParams, BTreeMap<Id, SecretKey>) {
     )
 }
 
-// #[tokio::test]
+#[tokio::test]
 pub async fn test_dkg() {
-
-    let (pp, secret_keys) = simulate_pp(10, 9);
+    let (pp, secret_keys) = simulate_pp(3, 2);
     let h = G::base_point2();
 
     let mut simulation = Simulation::<DkgMsg>::new();
@@ -234,7 +233,6 @@ pub async fn test_dkg() {
     let now = Instant::now();
 
     for i in 1..=pp.n {
-
         let party = simulation.add_party();
         let result = dkg(party, i, &pp, &h, &secret_keys[&i], false);
         party_output.push(result);

@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Formatter};
 use std::iter::Sum;
-use std::ops::{Add, Mul};
+use std::ops::{Add, Mul, Neg};
 use autocxx::prelude::*;
 include_cpp! {
     #include "bicycl.h"
@@ -63,6 +63,19 @@ impl<'a> From<&'a Scalar<Secp256k1>> for Mpz {
     fn from(value: &'a Scalar<Secp256k1>) -> Self {
         Mpz::from_bytes(value.to_bigint().to_bytes().as_slice())
     }
+}
+
+impl Neg for Mpz {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        let mut r = BICYCL::Mpz::copy_from(&self.mpz).within_box();
+        BICYCL::Mpz::neg(r.as_mut());
+        Mpz {
+            mpz: r,
+        }
+    }
+
 }
 
 impl Mul for Mpz {

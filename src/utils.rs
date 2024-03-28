@@ -251,6 +251,7 @@ impl PvssNizk {
         let u2 = Zq::random();
         let U1 = &pp.cl.power_of_h(&u1);
         let U2 = curve_generator * &u2;
+
         let gamma = PvssNizk::challenge1(pp, dealing, curve_generator);
 
         let U3 = QFPolynomial::new(
@@ -280,7 +281,7 @@ impl PvssNizk {
         let U1d = &dealing
             .shares_ciphertext
             .randomness
-            .exp(&pp.cl, &Mpz::from(&-&self.e));
+            .exp(&pp.cl, &-Mpz::from(&self.e));
         let U1 = &pp.cl.power_of_h(&self.z1).compose(&pp.cl, &U1d);
 
         // U2
@@ -295,7 +296,7 @@ impl PvssNizk {
         // U3
         let U3d = QFPolynomial::new(&pp.cl, pp.n, &dealing.shares_ciphertext.encryption)
             .eval(&pp.cl, &gamma)
-            .exp(&pp.cl, &Mpz::from(&-&self.e));
+            .exp(&pp.cl, &-Mpz::from(&self.e));
 
         let U3 = QFPolynomial::new(
             &pp.cl,
@@ -311,11 +312,9 @@ impl PvssNizk {
         .compose(&pp.cl, &U3d);
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3);
-        // let result = e == self.e;
-        // assert!(result);
-        // result
-        print!("e: {}, self.e: {}\n", e.to_bigint().to_hex(), self.e.to_bigint().to_hex());
-        true
+        let result = e == self.e;
+        assert!(result);
+        result
     }
 
     fn challenge1(pp: &PubParams, pvss_dealing: &PvssDealing, curve_generator: &G) -> Zq {
@@ -543,13 +542,13 @@ impl MtaNizk {
                 &mta_dealing
                     .shares_ciphertext
                     .randomness
-                    .exp(&pp.cl, &Mpz::from(&-&self.e)),
+                    .exp(&pp.cl, &-Mpz::from(&self.e)),
             );
 
         // U3
         let U3d = QFPolynomial::new(&pp.cl, pp.n, &mta_dealing.shares_ciphertext.encryption)
             .eval(&pp.cl, &gamma)
-            .exp(&pp.cl, &Mpz::from(&-&self.e));
+            .exp(&pp.cl, &-Mpz::from(&self.e));
 
         let U3 = QFPolynomial::new(&pp.cl, pp.n, &pvss_result.shares_ciphertext.encryption)
             .eval(&pp.cl, &gamma)
