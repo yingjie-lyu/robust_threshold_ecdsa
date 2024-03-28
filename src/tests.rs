@@ -58,7 +58,7 @@ where
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
-    let my_ni_dkg_msg = PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
+    let my_ni_dkg_msg = PvssDealing::random(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -84,8 +84,8 @@ where
 
     // Step 1: Generation of nonces k and gamma
     let my_nonce_gen_msg = NonceGenMsg {
-        k_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
-        gamma_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        k_dkg_msg: PvssDealing::random(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        gamma_dkg_msg: PvssDealing::random(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
     };
 
     outgoing
@@ -308,7 +308,7 @@ where
     let mut rounds = rounds.listen(incoming);
 
     // Step 0: DKG of x
-    let my_ni_dkg_msg = PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
+    let my_ni_dkg_msg = PvssDealing::random(t, parties.clone(), &clgroup, &mut rand_gen, &clpk);
 
     outgoing
         .send(Outgoing::broadcast(Msg::NiDkgMsg(my_ni_dkg_msg.clone())))
@@ -334,8 +334,8 @@ where
 
     // Step 1: Generation of nonces k and gamma
     let my_nonce_gen_msg = NonceGenMsg {
-        k_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
-        gamma_dkg_msg: PvssDealing::new(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        k_dkg_msg: PvssDealing::random(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
+        gamma_dkg_msg: PvssDealing::random(t, parties.clone(), &clgroup, &mut rand_gen, &clpk),
     };
 
     outgoing

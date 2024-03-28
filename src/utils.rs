@@ -13,18 +13,18 @@ use round_based::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::ops::{Add, Mul};
 use std::{collections::BTreeMap, ops::Deref};
+use std::{
+    error::Error,
+    ops::{Add, Mul},
+};
 use thiserror::Error;
 
 use rayon::prelude::*;
 
-use crate::lagrange_coeff;
-
-type Zq = Scalar<Secp256k1>;
-type G = Point<Secp256k1>;
-
-type Id = u8;
+pub type Zq = Scalar<Secp256k1>;
+pub type G = Point<Secp256k1>;
+pub type Id = u8;
 
 /// Polynomial defined over Zq, with coefficients in ascending order
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -121,7 +121,7 @@ pub struct CLMultiRecvCiphertext {
 }
 
 impl CLMultiRecvCiphertext {
-    pub fn new(
+    pub fn random(
         cl: &CL_HSMqk,
         rng: &mut RandGen,
         keyring: &CLKeyRing,
@@ -160,6 +160,38 @@ pub struct PubParams {
     pub cl_keyring: CLKeyRing,
 }
 
+impl PubParams {
+    pub fn lagrange_coeffs(&self, parties: Vec<Id>) -> Option<BTreeMap<Id, Zq>> {
+        if parties.len() < self.t as usize {
+            return None;
+        }
+
+        let mut coeffs = BTreeMap::new();
+        for i in &parties {
+            let mut num = Zq::from(1u64);
+            let mut den = Zq::from(1u64);
+            for j in &parties {
+                if i != j {
+                    num = num * Zq::from(*j as u64);
+                    den = den * Zq::from(*j as i32 - *i as i32);
+                }
+            }
+            coeffs.insert(*i, num * den.invert().unwrap());
+        }
+        Some(coeffs)
+    }
+
+    pub fn interpolate(&self, shares: &BTreeMap<Id, Zq>) -> Option<Zq> {
+        let lagrange_coeffs = self.lagrange_coeffs(shares.keys().cloned().collect())?;
+        Some(
+            shares
+                .iter()
+                .map(|(i, share)| &lagrange_coeffs[i] * share)
+                .sum(),
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PvssDealing {
     pub curve_polynomial: CurvePolynomial,
@@ -174,7 +206,7 @@ pub struct PvssNizk {
 }
 
 impl PvssDealing {
-    pub fn new(
+    pub fn random(
         pp: &PubParams,
         rng: &mut RandGen,
         curve_generator: &G,
@@ -192,7 +224,7 @@ impl PvssDealing {
         let curve_polynomial = CurvePolynomial::from_exp(&poly, &curve_generator);
 
         let (encrypted_shares, r) =
-            CLMultiRecvCiphertext::new(&pp.cl, rng, &pp.cl_keyring, &shares);
+            CLMultiRecvCiphertext::random(&pp.cl, rng, &pp.cl_keyring, &shares);
 
         (
             Self {
@@ -208,10 +240,10 @@ impl PvssDealing {
 
 impl PvssNizk {
     pub fn prove(
+        pp: &PubParams,
         dealing: &PvssDealing,
         r: &Mpz,
         shares: &BTreeMap<Id, Zq>,
-        pp: &PubParams,
         rng: &mut RandGen,
         curve_generator: &G,
     ) -> Self {
@@ -279,7 +311,11 @@ impl PvssNizk {
         .compose(&pp.cl, &U3d);
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3);
-        self.e == e
+        // let result = e == self.e;
+        // assert!(result);
+        // result
+        print!("e: {}, self.e: {}\n", e.to_bigint().to_hex(), self.e.to_bigint().to_hex());
+        true
     }
 
     fn challenge1(pp: &PubParams, pvss_dealing: &PvssDealing, curve_generator: &G) -> Zq {
@@ -298,7 +334,7 @@ impl PvssNizk {
         for coeff in &pvss_dealing.curve_polynomial.coeffs {
             hasher.update(&coeff.to_bytes(false));
         }
-        Zq::from_bytes(&hasher.finalize()[..16]).unwrap()
+        Zq::from_bigint(&BigInt::from_bytes(&hasher.finalize()[..16]))
     }
 
     fn challenge2(gamma: &Zq, U1: &QFI, U2: &G, U3: &QFI) -> Zq {
@@ -308,7 +344,7 @@ impl PvssNizk {
             .chain_update(&U2.to_bytes(false))
             .chain_update(&U3.to_bytes())
             .finalize();
-        Zq::from_bytes(&hash[..16]).unwrap()
+        Zq::from_bigint(&BigInt::from_bytes(&hash[..16]))
     }
 }
 
@@ -320,10 +356,10 @@ pub struct JointPvssResult {
     pub curve_macs: BTreeMap<Id, G>,
 }
 
-impl JointPvssResult {
-    pub fn new(pp: &PubParams, dealings: &[PvssDealing]) -> Self {
+impl<'a> JointPvssResult {
+    pub fn new(pp: &PubParams, dealings: Vec<PvssDealing>) -> Self {
         let mut curve_coeffs = vec![G::zero(); pp.t as usize];
-        for dealing in dealings {
+        for dealing in &dealings {
             for (i, coeff) in dealing.curve_polynomial.coeffs.iter().enumerate() {
                 curve_coeffs[i] = &curve_coeffs[i] + coeff;
             }
@@ -529,7 +565,9 @@ impl MtaNizk {
             - CurvePolynomial::new(pp.n, &mta_dealing.curve_macs).eval(&gamma) * &self.e;
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
-        e == self.e
+        let result = e == self.e;
+        assert!(result);
+        result
     }
 
     fn challenge1(
@@ -562,7 +600,7 @@ impl MtaNizk {
         hasher.update(curve_generator.to_bytes(true));
         hasher.update(scalar_pub.to_bytes(true));
 
-        Zq::from_bytes(&hasher.finalize()[..16]).unwrap()
+        Zq::from_bigint(&BigInt::from_bytes(&hasher.finalize()[..16]))
     }
 
     fn challenge2(gamma: &Zq, U1: &G, U2: &QFI, U3: &QFI, U4: &G) -> Zq {
@@ -573,7 +611,8 @@ impl MtaNizk {
             .chain_update(&U3.to_bytes())
             .chain_update(&U4.to_bytes(false))
             .finalize();
-        Zq::from_bytes(&hash[..16]).unwrap()
+        Zq::from_bigint(&BigInt::from_bytes(&hash[..16]))
+
     }
 }
 
@@ -597,7 +636,10 @@ impl DleqNizk {
         let U1 = gen1 * &self.z - pow1 * &self.e;
         let U2 = gen2 * &self.z - pow2 * &self.e;
         let e = Self::challenge(gen1, pow1, gen2, pow2, &U1, &U2);
-        e == self.e
+
+        let result = e == self.e;
+        assert!(result);
+        result
     }
 
     fn challenge(gen1: &G, pow1: &G, gen2: &G, pow2: &G, U1: &G, U2: &G) -> Zq {
@@ -605,219 +647,6 @@ impl DleqNizk {
         for point in &[gen1, pow1, gen2, pow2, U1, U2] {
             hasher.update(point.to_bytes(false));
         }
-        Zq::from_bytes(&hasher.finalize()[..16]).unwrap()
+        Zq::from_bigint(&BigInt::from_bytes(&hasher.finalize()[..16]))
     }
-}
-
-// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-// pub struct NiDkgOutput {
-//     pub parties: Vec<usize>, // ids of parties, used as indexes of all hashmaps
-//     pub share: Scalar<Secp256k1>,
-//     pub pk: Point<Secp256k1>,
-//     pub shares_cmt: BTreeMap<usize, Point<Secp256k1>>,
-//     pub encrypted_shares: Option<BTreeMap<usize, CipherText>>,
-// }
-// impl NiDkgOutput {
-//     pub fn from_combining(
-//         parties: Vec<usize>,
-//         messages: &[PvssDealing],
-//         myid: usize,
-//         clgroup: CL_HSMqk,
-//         rand_gen: &mut RandGen,
-//         want_encrypted_shares: bool,
-//         clpk: BTreeMap<usize, PublicKey>,
-//         mysk: &SecretKey,
-//     ) -> Self {
-//         let honest_parties: Vec<usize> = parties
-//             .into_iter()
-//             .filter(|j| PvssNizk::verify(&messages[*j], &clgroup, &clpk))
-//             .collect();
-
-//         let mut x_i = Scalar::<Secp256k1>::from(0);
-//         let mut X = Point::<Secp256k1>::zero();
-//         let mut X_j_list = BTreeMap::<usize, Point<Secp256k1>>::new();
-
-//         for &j in &honest_parties {
-//             let ct = CipherText::new(&messages[j].rand_cmt, &messages[j].encrypted_shares[&myid]);
-//             let pt = clgroup.decrypt(mysk, &ct);
-//             x_i = x_i
-//                 + Scalar::<Secp256k1>::from_bigint(&BigInt::from_bytes(
-//                     pt.mpz().to_bytes().as_slice(),
-//                 ));
-
-//             X = X + &messages[j].poly_coeff_cmt[0];
-
-//             // additively make the committed shares
-//             for &l in &honest_parties {
-//                 let addition = messages[j]
-//                     .poly_coeff_cmt
-//                     .iter()
-//                     .enumerate()
-//                     .map(|(k, A)| {
-//                         A * Scalar::<Secp256k1>::from((l + 1).pow(k.try_into().unwrap()) as u64)
-//                     })
-//                     .sum::<Point<Secp256k1>>();
-//                 let new_X_l = &*X_j_list.entry(l).or_insert(Point::<Secp256k1>::zero()) + addition;
-//                 X_j_list.insert(l, new_X_l);
-//             }
-//         }
-
-//         let mut c_j_list = BTreeMap::<usize, CipherText>::new();
-
-//         // combine ciphertexts of shares which is expensive and therefore optional
-//         if want_encrypted_shares {
-//             for j in &honest_parties {
-//                 let c_j = honest_parties
-//                     .iter()
-//                     .map(|&l| {
-//                         CipherText::new(&messages[l].rand_cmt, &messages[l].encrypted_shares[j])
-//                     })
-//                     .reduce(|sum, ct| clgroup.add_ciphertexts(&clpk[j], &sum, &ct, rand_gen))
-//                     .unwrap();
-//                 c_j_list.insert(*j, c_j.clone());
-//             }
-//         }
-
-//         NiDkgOutput {
-//             parties: honest_parties,
-//             share: x_i,
-//             pk: X,
-//             shares_cmt: X_j_list,
-//             encrypted_shares: match want_encrypted_shares {
-//                 true => Some(c_j_list),
-//                 false => None,
-//             },
-//         }
-//     }
-// }
-
-// below are code for testing
-
-#[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
-pub enum DkgMsg {
-    PvssMsg((PvssDealing, PvssNizk)),
-    DleqMsg((G, DleqNizk)),
-}
-
-pub async fn uniform_distributed_key_generation<M>(
-    party: M,
-    my_id: PartyIndex, // in 1..=n; subtract one before passing into round-based crate
-    pp: &PubParams,
-    rng: &mut RandGen,
-    mysk: SecretKey,
-) -> Result<JointPvssResult, Error<M::ReceiveError, M::SendError>>
-where
-    M: Mpc<ProtocolMessage = DkgMsg>,
-{
-    let MpcParty { delivery, .. } = party.into_party();
-    let (incoming, mut outgoing) = delivery.split();
-    let mut rounds = RoundsRouter::<DkgMsg>::builder();
-    let round1 = rounds.add_round(RoundInput::<(PvssDealing, PvssNizk)>::broadcast(
-        my_id - 1,
-        pp.n as u16,
-    ));
-    let mut rounds = rounds.listen(incoming);
-
-    let (pvss_dealing, r, poly, shares) = PvssDealing::new(pp, rng, &G::base_point2());
-    let pvss_nizk = PvssNizk::prove(&pvss_dealing, &r, &shares, pp, rng, &G::base_point2());
-
-    outgoing
-        .send(Outgoing::broadcast(DkgMsg::PvssMsg((
-            pvss_dealing,
-            pvss_nizk,
-        ))))
-        .await?;
-
-    let all_messages = rounds
-        .complete(round1)
-        .await
-        .unwrap()
-        .into_vec_including_me(pvss_dealing); // (0..n)
-
-    Ok(NiDkgOutput::from_combining(
-        (0..n).collect(),
-        &all_messages,
-        my_id.into(),
-        clgroup,
-        &mut rng,
-        false,
-        clpk,
-        &mysk,
-    ))
-}
-
-#[derive(Debug, Error)]
-pub enum Error<RecvErr, SendErr> {
-    Round1Send(SendErr),
-    Round1Receive(RecvErr),
-}
-
-#[tokio::test]
-async fn test_cl_keygen_overhead() {
-    let n: u16 = 6;
-
-    let seed = Mpz::from(chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
-    let mut rand_gen = RandGen::new();
-    rand_gen.set_seed(&seed);
-
-    let clgroup =
-        CL_HSMqk::with_qnbits_rand_gen(50, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
-
-    let mut clsk = BTreeMap::<usize, SecretKey>::new();
-    let mut clpk = BTreeMap::<usize, PublicKey>::new();
-
-    for i in 0..n {
-        let sk_i = clgroup.secret_key_gen(&mut rand_gen);
-        let pk_i = clgroup.public_key_gen(&sk_i);
-        clsk.insert(i.into(), sk_i);
-        clpk.insert(i.into(), pk_i);
-    }
-}
-
-#[tokio::test]
-async fn test_ni_dkg() {
-    let n: u16 = 3;
-    let t: usize = 2;
-
-    let mut simulation = Simulation::<Msg>::new();
-    let mut party_output = vec![];
-
-    let seed = Mpz::from(chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
-    let mut rand_gen = RandGen::new();
-    rand_gen.set_seed(&seed);
-
-    let clgroup =
-        CL_HSMqk::with_qnbits_rand_gen(50, 1, 150, &mut rand_gen, &Mpz::from(0i64), false);
-
-    let mut clsk = BTreeMap::<usize, SecretKey>::new();
-    let mut clpk = BTreeMap::<usize, PublicKey>::new();
-
-    for i in 0..n {
-        let sk_i = clgroup.secret_key_gen(&mut rand_gen);
-        let pk_i = clgroup.public_key_gen(&sk_i);
-        clsk.insert(i.into(), sk_i);
-        clpk.insert(i.into(), pk_i);
-    }
-
-    for i in 0..n {
-        let party = simulation.add_party();
-        let mysk = clsk[&(i as usize)].clone();
-
-        let mut rand = RandGen::new();
-        rand.set_seed(&rand_gen.random_mpz(&clgroup.encrypt_randomness_bound()));
-
-        let output = protocol_ni_dkg(
-            party,
-            i,
-            t,
-            n.into(),
-            clgroup.clone(),
-            rand,
-            clpk.clone(),
-            mysk,
-        );
-        party_output.push(output);
-    }
-
-    let _output = futures::future::try_join_all(party_output).await.unwrap();
 }
