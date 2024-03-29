@@ -354,7 +354,7 @@ where
 
     let duo_pvss_messages = rounds.complete(round1).await.map_err(Error::Round1Recv)?;
 
-    // Round 1 processing
+    // Round 1 filtering
     let mut k_dealings = BTreeMap::new();
     let mut phi_dealings = BTreeMap::new();
 
@@ -376,6 +376,7 @@ where
             phi_dealings.insert(j, msg.phi_pvss.dealing);
         });
 
+    // Round 1 processing
     let k_result = JointPvssResult::new(
         pp,
         k_dealings.values().take(pp.t as usize).cloned().collect(),
@@ -416,7 +417,7 @@ where
 
     let conv_messages = rounds.complete(round2).await.map_err(Error::Round2Recv)?;
 
-    // Round 2 processing
+    // Round 2 filtering
     let mut kphi_dealings = BTreeMap::new();
     let mut xphi_dealings = BTreeMap::new();
 
@@ -454,7 +455,8 @@ where
             xphi_dealings.insert(j, msg.x_phi_mta.dealing);
         });
 
-        // todo: decrypt to get fragments        
+        // Round 2 processing
+        // todo: decrypt to get fragments, etc.  
 
 
     Ok(())
