@@ -428,16 +428,16 @@ impl MtaDealing {
     /// the pairwise shares returned should be negated when later used
     pub fn new(
         pp: &PubParams,
-        pvss: &JointPvssResult,
+        pvss_result: &JointPvssResult,
         scalar: &Zq,
         curve_generator: &G,
     ) -> (Self, BTreeMap<Id, Zq>) {
-        let randomness = pvss
+        let randomness = pvss_result
             .shares_ciphertext
             .randomness
             .exp(&pp.cl, &Mpz::from(scalar));
 
-        let multienc = &pvss.shares_ciphertext.encryption;
+        let multienc = &pvss_result.shares_ciphertext.encryption;
 
         let pairwise_shares: BTreeMap<Id, Zq> =
             multienc.iter().map(|(&id, _)| (id, Zq::random())).collect();
@@ -452,7 +452,7 @@ impl MtaDealing {
             })
             .collect();
 
-        let curve_macs = pvss
+        let curve_macs = pvss_result
             .curve_macs
             .iter()
             .map(|(&id, mac)| (id, scalar * mac + curve_generator * &pairwise_shares[&id]))

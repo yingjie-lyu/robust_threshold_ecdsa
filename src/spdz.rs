@@ -222,9 +222,9 @@ pub fn simulate_pp(n: Id, t: Id) -> (PubParams, BTreeMap<Id, SecretKey>) {
     )
 }
 
-#[tokio::test]
+// #[tokio::test]
 pub async fn test_dkg() {
-    let (pp, secret_keys) = simulate_pp(3, 2);
+    let (pp, secret_keys) = simulate_pp(10, 5);
     let h = G::base_point2();
 
     let mut simulation = Simulation::<DkgMsg>::new();
@@ -242,3 +242,45 @@ pub async fn test_dkg() {
     let elapsed = now.elapsed();
     println!("Elapsed: {:.2?}", elapsed);
 }
+
+/// Code for the presigning and signing protocol.
+
+
+
+
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DuoPvssMsg {
+    pub k_dealing: PvssMsg,
+    pub phi_dealing: PvssMsg,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MtaMsg {
+    pub dealing: MtaDealing,
+    pub proof: MtaNizk,
+}
+
+impl MtaMsg {
+    pub fn new(pp: &PubParams, rng: &mut RandGen, pvss_result: &JointPvssResult, scalar: &Zq, curve_generator: &G) -> Self {
+        let (dealing, pairwise_shares) = MtaDealing::new(pp, pvss_result, scalar, curve_generator);
+        let proof = MtaNizk::prove(pp, pvss_result, &dealing, curve_generator, rng, scalar, &pairwise_shares);
+
+        MtaMsg { dealing, proof }
+    }
+
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PresignConvMsg {
+    pub open_R: OpenPowerMsg,
+    pub kphi_dealing: MtaMsg,
+    pub xphi_dealing: MtaMsg,
+}
+
+#[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
+pub enum PresignMsg {
+    DuoPvss(DuoPvssMsg),
+    Conv(PresignConvMsg),
+}
+

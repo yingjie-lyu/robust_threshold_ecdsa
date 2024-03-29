@@ -20,7 +20,8 @@ use robust_threshold_ecdsa::spdz;
 
 #[tokio::main]
 async fn main() {
-    println!("Hello, world!");
+    // println!("Hello, world!");
+    spdz::test_dkg().await;
 }
 
 
