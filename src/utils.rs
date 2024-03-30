@@ -87,6 +87,11 @@ impl CurvePolynomial {
     }
 }
 
+
+
+
+
+
 /// TODO: refactor to use the `CurvePolynomial` struct
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QFPolynomial {
@@ -148,6 +153,16 @@ impl CLMultiRecvCiphertext {
             r,
         )
     }
+
+    pub fn decrypt_mine(&self, cl: &CL_HSMqk, my_id: Id, sk: &SecretKey) -> Zq {
+        let ciphertext_to_me = CipherText::new(
+            &self.randomness,
+            &self.encryption[&my_id],
+        );
+        Zq::from(BigInt::from_bytes(
+            &cl.decrypt(sk, &ciphertext_to_me).mpz().to_bytes(),
+        ))
+    }
 }
 
 type CLKeyRing = BTreeMap<Id, PublicKey>;
@@ -190,6 +205,15 @@ impl PubParams {
                 .sum(),
         )
     }
+
+    /// interpolates the constant term of certain points from a point polynomial
+    pub fn interpolate_on_curve(&self, points: &BTreeMap<Id, G>) -> Option<G> {
+        let lagrange_coeffs = self.lagrange_coeffs(points.keys().cloned().collect())?;
+        Some(points
+            .iter()
+            .map(|(i, point)| point * &lagrange_coeffs[i])
+            .sum())
+}
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -513,6 +537,9 @@ impl MtaNizk {
         let U4 = CurvePolynomial::new(pp.n, &pvss_result.curve_macs).eval(&gamma) * &u1_modq
             + curve_generator * &u2;
 
+        println!("P: U4: {:?}", U4);
+
+
         let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
         let z1 = &u1 + Mpz::from(&(&e * scalar));
         let z2 = Polynomial::new(pp.n, pairwise_shares).eval(&gamma) * &e + &u2;
@@ -563,10 +590,10 @@ impl MtaNizk {
             + CurvePolynomial::new(pp.n, &pvss_result.curve_macs).eval(&gamma) * &z1_modq
             - CurvePolynomial::new(pp.n, &mta_dealing.curve_macs).eval(&gamma) * &self.e;
 
+        println!("V: U4: {:?}", U4);
+
         let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
-        let result = e == self.e;
-        assert!(result);
-        result
+        e == self.e
     }
 
     fn challenge1(

@@ -1,9 +1,9 @@
 use bicycl::{CL_HSMqk, CipherText, ClearText, Mpz, PublicKey, RandGen, SecretKey, QFI};
 use curv::{arithmetic::Converter, BigInt};
 use ecdsa::Signature;
-use futures::SinkExt;
+use futures::{stream::{futures_unordered::Iter, once}, SinkExt};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, iter};
 use std::time::Instant;
 
 use crate::utils::*;
@@ -46,9 +46,9 @@ impl PvssMsg {
 }
 
 impl OpenPowerMsg {
-    pub fn new(secret: &Zq, gen1: &G, gen2: &G, pow1: &G) -> Self {
+    pub fn new(secret: &Zq, gen1: &G, pow1: &G, gen2: &G) -> Self {
         let point = gen2 * secret;
-        let proof = DleqNizk::prove(gen1, gen2, pow1, &point, secret);
+        let proof = DleqNizk::prove(gen1, pow1, gen2, &point, secret);
 
         OpenPowerMsg { point, proof }
     }
@@ -129,14 +129,7 @@ where
             .collect(),
     );
 
-    let my_ciphertext = CipherText::new(
-        &pvss_result.shares_ciphertext.randomness,
-        &pvss_result.shares_ciphertext.encryption[&my_id],
-    );
-
-    let my_share = Zq::from(BigInt::from_bytes(
-        &pp.cl.decrypt(my_cl_sk, &my_ciphertext).mpz().to_bytes(),
-    ));
+    let my_share = pvss_result.shares_ciphertext.decrypt_mine(&pp.cl, my_id, my_cl_sk);
 
     let my_pub_share = G::generator() * &my_share;
 
@@ -176,13 +169,7 @@ where
             pub_shares.insert(j, msg.point);
         });
 
-    let lagrange_coeffs = pp
-        .lagrange_coeffs(pub_shares.keys().copied().collect())
-        .unwrap();
-    let pk = pub_shares
-        .iter()
-        .map(|(i, share)| &lagrange_coeffs[i] * share)
-        .sum();
+    let pk = pp.interpolate_on_curve(&pub_shares).unwrap();
 
     // todo: interpolate the missing public shares.
 
@@ -222,7 +209,7 @@ pub fn simulate_pp(n: Id, t: Id) -> (PubParams, BTreeMap<Id, SecretKey>) {
     )
 }
 
-// #[tokio::test]
+#[tokio::test]
 pub async fn test_dkg() {
     let (pp, secret_keys) = simulate_pp(10, 5);
     let h = G::base_point2();
@@ -278,7 +265,7 @@ impl MtaMsg {
 
         let negated_shares = pairwise_shares
             .iter()
-            .map(|(j, share)| (j.clone(), -share))
+            .map(|(&j, share)| (j, -share))
             .collect();
 
         (MtaMsg { dealing, proof }, negated_shares)
@@ -286,7 +273,7 @@ impl MtaMsg {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PresignConvMsg {
+pub struct ConvMsg {
     pub open_R: OpenPowerMsg,
     pub k_phi_mta: MtaMsg,
     pub x_phi_mta: MtaMsg,
@@ -296,21 +283,20 @@ pub struct PresignConvMsg {
 pub struct OnlineSignMsg {
     pub fragments_u: BTreeMap<Id, Zq>,
     pub fragments_w: BTreeMap<Id, Zq>,
-    pub Ui: OpenPowerMsg,
-    pub Vi: OpenPowerMsg,
+    pub open_Ui: OpenPowerMsg,
+    pub open_Vi: OpenPowerMsg,
 }
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
-pub enum SigningMsg {
+pub enum PresignMsg {
     DuoPvss(DuoPvssMsg),
-    Conv(PresignConvMsg),
-    OnlineSign(OnlineSignMsg),
+    Conv(ConvMsg),
 }
 
 
 /// Note: there are quite a few temporaries so we refrain from splitting
 ///  the presigning and signing protocols into separate functions.
-pub async fn signing_protocol<M>(
+pub async fn presign_protocol<M>(
     party: M,
     my_id: Id, // in the range 1..=n, subtract one before use
     pp: &PubParams,
@@ -322,7 +308,7 @@ pub async fn signing_protocol<M>(
 ) -> Result<(), Error<M::ReceiveError, M::SendError>>
 // Result<Signature<Secp256k1>, Error<M::ReceiveError, M::SendError>>
 where
-    M: Mpc<ProtocolMessage = SigningMsg>,
+    M: Mpc<ProtocolMessage = PresignMsg>,
 {
     let mut rng = RandGen::new();
     rng.set_seed(&Mpz::from(&Zq::random()));
@@ -334,10 +320,9 @@ where
     let i = (my_id - 1) as u16;
     let n = pp.n as u16;
 
-    let mut rounds = RoundsRouter::<SigningMsg>::builder();
+    let mut rounds = RoundsRouter::<PresignMsg>::builder();
     let round1 = rounds.add_round(RoundInput::<DuoPvssMsg>::broadcast(i, n));
-    let round2 = rounds.add_round(RoundInput::<PresignConvMsg>::broadcast(i, n));
-    let round3 = rounds.add_round(RoundInput::<OnlineSignMsg>::broadcast(i, n));
+    let round2 = rounds.add_round(RoundInput::<ConvMsg>::broadcast(i, n));
     let mut rounds = rounds.listen(incoming);
 
     // Round 1 interaction
@@ -345,7 +330,7 @@ where
     let my_phi_pvss = PvssMsg::random(pp, &mut rng, h);
 
     outgoing
-        .send(Outgoing::broadcast(SigningMsg::DuoPvss(DuoPvssMsg {
+        .send(Outgoing::broadcast(PresignMsg::DuoPvss(DuoPvssMsg {
             k_pvss: my_k_pvss.clone(),
             phi_pvss: my_phi_pvss.clone(),
         })))
@@ -376,38 +361,25 @@ where
             phi_dealings.insert(j, msg.phi_pvss.dealing);
         });
 
+    let k_pvss_result = JointPvssResult::new(pp,k_dealings.values().take(pp.t as usize).cloned().collect());
+    let phi_pvss_result = JointPvssResult::new(pp,phi_dealings.values().take(pp.t as usize).cloned().collect());
+
     // Round 1 processing
-    let k_result = JointPvssResult::new(
-        pp,
-        k_dealings.values().take(pp.t as usize).cloned().collect(),
-    );
-    let phi_result = JointPvssResult::new(
-        pp,
-        phi_dealings.values().take(pp.t as usize).cloned().collect(),
-    );
+    let Phi = phi_pvss_result.curve_polynomial.coeffs[0].clone();
 
-    let my_k_ciphertext = CipherText::new(
-        &k_result.shares_ciphertext.randomness,
-        &k_result.shares_ciphertext.encryption[&my_id],
-    );
-
-    let ki = Zq::from(BigInt::from_bytes(
-        &pp.cl.decrypt(my_cl_sk, &my_k_ciphertext).mpz().to_bytes(),
-    ));
+    let ki = k_pvss_result.shares_ciphertext.decrypt_mine(&pp.cl, my_id, my_cl_sk);
+    let phi_i = phi_pvss_result.shares_ciphertext.decrypt_mine(&pp.cl, my_id, my_cl_sk);
 
     let Ri = G::generator() * &ki;
-    let dleq_proof = DleqNizk::prove(&h, &k_result.curve_macs[&my_id], &G::generator(), &Ri, &ki);
-    let open_R = OpenPowerMsg {
-        point: Ri,
-        proof: dleq_proof,
-    };
+    let dleq_proof = DleqNizk::prove(&h, &k_pvss_result.curve_macs[&my_id], &G::generator(), &Ri, &ki);
+    let open_R = OpenPowerMsg { point: Ri.clone(), proof: dleq_proof };
 
-    let (my_kphi_mta, my_betas) = MtaMsg::new(pp, &mut rng, &phi_result, &ki, h);
-    let (my_xphi_mta, my_nus) = MtaMsg::new(pp, &mut rng, &phi_result, my_x_share, h);
+    let (my_kphi_mta, my_betas) = MtaMsg::new(pp, &mut rng, &phi_pvss_result, &ki, h);
+    let (my_xphi_mta, my_nus) = MtaMsg::new(pp, &mut rng, &phi_pvss_result, my_x_share, h);
 
     // Round 2 interaction
     outgoing
-        .send(Outgoing::broadcast(SigningMsg::Conv(PresignConvMsg {
+        .send(Outgoing::broadcast(PresignMsg::Conv(ConvMsg {
             open_R,
             k_phi_mta: my_kphi_mta.clone(),
             x_phi_mta: my_xphi_mta.clone(),
@@ -418,46 +390,103 @@ where
     let conv_messages = rounds.complete(round2).await.map_err(Error::Round2Recv)?;
 
     // Round 2 filtering
+    let mut R_contributions = BTreeMap::new();
+    R_contributions.insert(my_id, Ri.clone());
     let mut kphi_dealings = BTreeMap::new();
     let mut xphi_dealings = BTreeMap::new();
 
-    kphi_dealings.insert(my_id, my_kphi_mta.dealing);
-    xphi_dealings.insert(my_id, my_xphi_mta.dealing);
 
     conv_messages
         .into_iter_indexed()
         .map(|(inner_id, _, msg)| ((inner_id + 1) as Id, msg))
         .filter(|(id, msg)| {
             lazy_verification || {
-                let Ki = &k_result.curve_macs[id];
-                msg.open_R.proof.verify(
-                    &h,
-                    Ki,
-                    &G::generator(),
-                    &msg.open_R.point,
-                ) && msg.k_phi_mta.proof.verify(
-                    pp,
-                    &phi_result,
-                    &msg.k_phi_mta.dealing,
-                    h,
-                    Ki,
-                ) && msg.x_phi_mta.proof.verify(
-                    pp,
-                    &phi_result,
-                    &msg.x_phi_mta.dealing,
-                    &G::generator(),
-                    &threshold_pk.pub_shares[id],
-                )
+                let Ki = &k_pvss_result.curve_macs[id];
+                msg.open_R.proof.verify( h,Ki,&G::generator(),&msg.open_R.point)
+                 && msg.k_phi_mta.proof.verify(pp,&phi_pvss_result,&msg.k_phi_mta.dealing,h,Ki)
+                 && msg.x_phi_mta.proof.verify(pp,&phi_pvss_result,&msg.x_phi_mta.dealing,&G::generator(),&threshold_pk.pub_shares[id])
             }
         })
         .for_each(|(j, msg)| {
+            R_contributions.insert(j, msg.open_R.point);
             kphi_dealings.insert(j, msg.k_phi_mta.dealing);
             xphi_dealings.insert(j, msg.x_phi_mta.dealing);
         });
 
-        // Round 2 processing
-        // todo: decrypt to get fragments, etc.  
+    // Round 2 processing
+    let R = pp.interpolate_on_curve(&R_contributions).unwrap();  // assumes enough parties are honest
+    let r = Zq::from_bigint(&R.x_coord().unwrap());
 
+    let mut fragments_u = BTreeMap::new();
+    let mut fragments_w = BTreeMap::new();
+    
+    let mask_polynomial = Polynomial {coeffs: iter::once(Zq::zero()).chain( (1..pp.t).map(|_| Zq::random())).collect()};
+    kphi_dealings.iter().for_each(|(j, dealing)| {
+        let alpha_from_j = dealing.shares_ciphertext.decrypt_mine(&pp.cl, my_id, my_cl_sk);
+        let u_j = alpha_from_j + &my_betas[j] + mask_polynomial.eval(&Zq::from(*j as u64));
+        fragments_u.insert(j, u_j);
+    });
+
+    xphi_dealings.iter().for_each(|(j, dealing)| {
+        let mu_from_j = dealing.shares_ciphertext.decrypt_mine(&pp.cl, my_id, my_cl_sk);
+        let v_j = (mu_from_j + &my_nus[j]) * &r;
+        fragments_w.insert(j, v_j);
+    });
+
+    fragments_u.insert(&my_id, &ki * &phi_i + mask_polynomial.eval(&Zq::from(my_id as u64)));
+    fragments_w.insert(&my_id, &r * my_x_share * &phi_i);
+
+    let open_Ui = OpenPowerMsg::new(&ki, &G::generator(), &Ri, &Phi );
+    let open_Vi = OpenPowerMsg::new(&my_x_share, &G::generator(), &threshold_pk.pk,&Phi);
+
+
+    kphi_dealings.insert(my_id, my_kphi_mta.dealing);
+    xphi_dealings.insert(my_id, my_xphi_mta.dealing);
 
     Ok(())
+}
+
+
+
+#[tokio::test]
+pub async fn test_presign_protocol() {
+    let (pp, secret_keys) = simulate_pp(3, 2);
+    let h = G::base_point2();
+
+    // simulate threshold public & secret keys
+    let coeffs = (0..pp.t).map(|_| Zq::random()).collect();
+    let polynomial = Polynomial { coeffs };
+    let curve_polynomial = CurvePolynomial::from_exp(&polynomial, &G::generator());
+
+    let threshold_pk = ThresholdPubKey {
+        pk: curve_polynomial.coeffs[0].clone(),
+        pub_shares: (1..=pp.n).map(|i| (i, curve_polynomial.eval(&Zq::from(i as u64)))).collect(),
+    };
+
+    let x_shares: BTreeMap<Id, Zq> = (1..=pp.n).map(|i| (i, polynomial.eval(&Zq::from(i as u64)))).collect();
+
+
+    let mut simulation = Simulation::<PresignMsg>::new();
+    let mut party_output = vec![];
+
+    let now = Instant::now();
+
+    for i in 1..=pp.n {
+        let party = simulation.add_party();
+        let result = presign_protocol(
+            party,
+            i,
+            &pp,
+            &h,
+            &threshold_pk,
+            &secret_keys[&i],
+            &x_shares[&i],
+            true,
+        );
+        party_output.push(result);
+    }
+
+    let output = futures::future::try_join_all(party_output).await.unwrap();
+    let elapsed = now.elapsed();
+    println!("Elapsed: {:.2?}", elapsed);
 }
