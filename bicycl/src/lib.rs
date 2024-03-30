@@ -323,6 +323,10 @@ impl QFI {
 unsafe impl Send for QFI {
 }
 
+unsafe impl Sync for QFI {
+}
+
+
 impl Clone for QFI {
     fn clone(&self) -> Self {
         QFI {
@@ -506,6 +510,12 @@ impl CL_HSMqk {
     }
 }
 
+unsafe impl Send for CL_HSMqk {
+}
+
+unsafe impl Sync for CL_HSMqk {
+}
+
 pub struct SecretKey {
     sk: Pin<Box<BICYCL::CL_HSMqk_SecretKey>>,
 }
@@ -568,6 +578,12 @@ impl PublicKey {
             qfi: r
         }
     }
+}
+
+unsafe impl Send for PublicKey {
+}
+
+unsafe impl Sync for PublicKey {
 }
 
 pub struct ClearText {

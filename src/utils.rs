@@ -507,7 +507,8 @@ impl MtaNizk {
         pp: &PubParams,
         pvss_result: &JointPvssResult,
         mta_dealing: &MtaDealing,
-        curve_generator: &G,
+        mac_base: &G,
+        pub_base: &G,
         rng: &mut RandGen,
         scalar: &Zq,
         pairwise_shares: &BTreeMap<Id, Zq>,
@@ -516,15 +517,18 @@ impl MtaNizk {
             pp,
             pvss_result,
             mta_dealing,
-            curve_generator,
-            &(curve_generator * scalar),
+            mac_base,
+            pub_base,
+            &(pub_base * scalar),
         );
 
         let u1 = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
         let u2 = Zq::random();
 
         let u1_modq = Zq::from(BigInt::from_bytes(&u1.to_bytes()) % Zq::group_order());
-        let U1 = G::generator() * &u1_modq;
+        let U1 = pub_base * &u1_modq;
+
+
         let U2 = pvss_result.shares_ciphertext.randomness.exp(&pp.cl, &u1);
 
         let U3 = QFPolynomial::new(&pp.cl, pp.n, &pvss_result.shares_ciphertext.encryption)
@@ -535,13 +539,10 @@ impl MtaNizk {
         // compute original macs from pvss_result.curve_polynomial
         // TODO: profile, and may make sense to reuse what's previously computed
         let U4 = CurvePolynomial::new(pp.n, &pvss_result.curve_macs).eval(&gamma) * &u1_modq
-            + curve_generator * &u2;
-
-        println!("P: U4: {:?}", U4);
-
+            + mac_base * &u2;
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
-        let z1 = &u1 + Mpz::from(&(&e * scalar));
+        let z1 = &u1 + Mpz::from(&e) * Mpz::from(scalar);
         let z2 = Polynomial::new(pp.n, pairwise_shares).eval(&gamma) * &e + &u2;
 
         Self { e, z1, z2 }
@@ -552,13 +553,14 @@ impl MtaNizk {
         pp: &PubParams,
         pvss_result: &JointPvssResult,
         mta_dealing: &MtaDealing,
-        curve_generator: &G,
+        mac_base: &G,
+        pub_base: &G,
         scalar_pub: &G,
     ) -> bool {
-        let gamma = Self::challenge1(pp, pvss_result, mta_dealing, curve_generator, scalar_pub);
+        let gamma = Self::challenge1(pp, pvss_result, mta_dealing, mac_base, pub_base, scalar_pub);
 
         let z1_modq = Zq::from(BigInt::from_bytes(&self.z1.to_bytes()) % Zq::group_order());
-        let U1 = G::generator() * z1_modq - scalar_pub * &self.e;
+        let U1 = pub_base * z1_modq - scalar_pub * &self.e;
 
         let U2 = pvss_result
             .shares_ciphertext
@@ -586,11 +588,9 @@ impl MtaNizk {
         // U4
         let z1_modq = Zq::from(BigInt::from_bytes(&self.z1.to_bytes()) % Zq::group_order());
 
-        let U4 = curve_generator * &self.z2
+        let U4 = mac_base * &self.z2
             + CurvePolynomial::new(pp.n, &pvss_result.curve_macs).eval(&gamma) * &z1_modq
             - CurvePolynomial::new(pp.n, &mta_dealing.curve_macs).eval(&gamma) * &self.e;
-
-        println!("V: U4: {:?}", U4);
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
         e == self.e
@@ -600,7 +600,8 @@ impl MtaNizk {
         pp: &PubParams,
         pvss_result: &JointPvssResult,
         mta_dealing: &MtaDealing,
-        curve_generator: &G,
+        mac_base: &G,
+        pub_base: &G,
         scalar_pub: &G,
     ) -> Zq {
         let mut hasher = Sha256::new();
@@ -623,7 +624,8 @@ impl MtaNizk {
             hasher.update(&id.to_be_bytes());
             hasher.update(&mac.to_bytes(false));
         }
-        hasher.update(curve_generator.to_bytes(true));
+        hasher.update(mac_base.to_bytes(true));
+        hasher.update(pub_base.to_bytes(true));
         hasher.update(scalar_pub.to_bytes(true));
 
         Zq::from_bigint(&BigInt::from_bytes(&hasher.finalize()[..16]))

@@ -2,6 +2,7 @@ use bicycl::{CL_HSMqk, CipherText, ClearText, Mpz, PublicKey, RandGen, SecretKey
 use curv::{arithmetic::Converter, BigInt};
 use ecdsa::Signature;
 use futures::{stream::{futures_unordered::Iter, once}, SinkExt};
+use rayon::iter::{ParallelBridge, ParallelIterator, MapWith};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, iter};
 use std::time::Instant;
@@ -250,14 +251,16 @@ impl MtaMsg {
         rng: &mut RandGen,
         pvss_result: &JointPvssResult,
         scalar: &Zq,
-        curve_generator: &G,
+        mac_base: &G,
+        pub_base: &G,
     ) -> (Self, BTreeMap<Id, Zq>) {
-        let (dealing, pairwise_shares) = MtaDealing::new(pp, pvss_result, scalar, curve_generator);
+        let (dealing, pairwise_shares) = MtaDealing::new(pp, pvss_result, scalar, mac_base);
         let proof = MtaNizk::prove(
             pp,
             pvss_result,
             &dealing,
-            curve_generator,
+            mac_base,
+            pub_base,
             rng,
             scalar,
             &pairwise_shares,
@@ -374,8 +377,8 @@ where
     let dleq_proof = DleqNizk::prove(&h, &k_pvss_result.curve_macs[&my_id], &G::generator(), &Ri, &ki);
     let open_R = OpenPowerMsg { point: Ri.clone(), proof: dleq_proof };
 
-    let (my_kphi_mta, my_betas) = MtaMsg::new(pp, &mut rng, &phi_pvss_result, &ki, h);
-    let (my_xphi_mta, my_nus) = MtaMsg::new(pp, &mut rng, &phi_pvss_result, my_x_share, h);
+    let (my_kphi_mta, my_betas) = MtaMsg::new(pp, &mut rng, &phi_pvss_result, &ki, h, h);
+    let (my_xphi_mta, my_nus) = MtaMsg::new(pp, &mut rng, &phi_pvss_result, my_x_share, h, &G::generator());
 
     // Round 2 interaction
     outgoing
@@ -396,22 +399,25 @@ where
     let mut xphi_dealings = BTreeMap::new();
 
 
-    conv_messages
+    let filtered_messages = conv_messages
         .into_iter_indexed()
-        .map(|(inner_id, _, msg)| ((inner_id + 1) as Id, msg))
+        .par_bridge()
+        .map(|(inner_id, _, msg)| ((inner_id + 1) as Id, msg.clone()))
         .filter(|(id, msg)| {
             lazy_verification || {
                 let Ki = &k_pvss_result.curve_macs[id];
                 msg.open_R.proof.verify( h,Ki,&G::generator(),&msg.open_R.point)
-                 && msg.k_phi_mta.proof.verify(pp,&phi_pvss_result,&msg.k_phi_mta.dealing,h,Ki)
-                 && msg.x_phi_mta.proof.verify(pp,&phi_pvss_result,&msg.x_phi_mta.dealing,&G::generator(),&threshold_pk.pub_shares[id])
+                 && msg.k_phi_mta.proof.verify(pp,&phi_pvss_result,&msg.k_phi_mta.dealing,h,h, Ki)
+                 && msg.x_phi_mta.proof.verify(pp,&phi_pvss_result,&msg.x_phi_mta.dealing,h, &G::generator(),&threshold_pk.pub_shares[id])
             }
         })
-        .for_each(|(j, msg)| {
-            R_contributions.insert(j, msg.open_R.point);
-            kphi_dealings.insert(j, msg.k_phi_mta.dealing);
-            xphi_dealings.insert(j, msg.x_phi_mta.dealing);
-        });
+        .collect::<BTreeMap<Id, ConvMsg>>();
+
+    filtered_messages.iter().for_each(|(&j, msg)| {
+        R_contributions.insert(j, msg.open_R.point.clone());
+        kphi_dealings.insert(j, msg.k_phi_mta.dealing.clone());
+        xphi_dealings.insert(j, msg.x_phi_mta.dealing.clone());
+    });
 
     // Round 2 processing
     let R = pp.interpolate_on_curve(&R_contributions).unwrap();  // assumes enough parties are honest
@@ -450,7 +456,7 @@ where
 
 #[tokio::test]
 pub async fn test_presign_protocol() {
-    let (pp, secret_keys) = simulate_pp(3, 2);
+    let (pp, secret_keys) = simulate_pp(10, 5);
     let h = G::base_point2();
 
     // simulate threshold public & secret keys
@@ -481,7 +487,7 @@ pub async fn test_presign_protocol() {
             &threshold_pk,
             &secret_keys[&i],
             &x_shares[&i],
-            true,
+            false,
         );
         party_output.push(result);
     }
