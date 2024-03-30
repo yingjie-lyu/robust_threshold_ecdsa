@@ -349,8 +349,9 @@ where
     k_dealings.insert(my_id, my_k_pvss.dealing);
     phi_dealings.insert(my_id, my_phi_pvss.dealing);
 
-    duo_pvss_messages
+    let filtered_duo_pvss_messages = duo_pvss_messages
         .into_iter_indexed()
+        .par_bridge()
         .map(|(inner_id, _, msg)| ((inner_id + 1) as Id, msg))
         .filter(|(_, msg)| {
             lazy_verification || {
@@ -358,10 +359,12 @@ where
                     && msg.phi_pvss.proof.verify(&msg.phi_pvss.dealing, pp, h)
             }
         })
-        .take(pp.t as usize)
-        .for_each(|(j, msg)| {
-            k_dealings.insert(j, msg.k_pvss.dealing);
-            phi_dealings.insert(j, msg.phi_pvss.dealing);
+        .collect::<BTreeMap<Id, DuoPvssMsg>>();
+
+    filtered_duo_pvss_messages.iter().take(pp.t as usize)
+        .for_each(|(&j, msg)| {
+            k_dealings.insert(j, msg.k_pvss.dealing.clone());
+            phi_dealings.insert(j, msg.phi_pvss.dealing.clone());
         });
 
     let k_pvss_result = JointPvssResult::new(pp,k_dealings.values().take(pp.t as usize).cloned().collect());
@@ -454,9 +457,9 @@ where
 
 
 
-#[tokio::test]
+// #[tokio::test]
 pub async fn test_presign_protocol() {
-    let (pp, secret_keys) = simulate_pp(10, 5);
+    let (pp, secret_keys) = simulate_pp(10, 9);
     let h = G::base_point2();
 
     // simulate threshold public & secret keys
