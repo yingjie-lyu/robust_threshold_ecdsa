@@ -137,7 +137,7 @@ impl CLMultiRecvCiphertext {
         let randomness = cl.power_of_h(&r);
 
         let encryption = plaintexts
-            .iter()
+            .par_iter()
             .map(|(id, m)| {
                 let f_pow_m = cl.power_of_f(&Mpz::from(m));
                 let pk_pow_r = keyring[id].exponentiation(cl, &r);
@@ -448,10 +448,10 @@ pub struct MtaDealing {
 }
 
 impl MtaDealing {
-    /// the caller should remove disqualified parties from pvss_result
     /// the pairwise shares returned should be negated when later used
     pub fn new(
         pp: &PubParams,
+        my_id: Id,
         pvss_result: &JointPvssResult,
         scalar: &Zq,
         curve_generator: &G,
@@ -461,13 +461,12 @@ impl MtaDealing {
             .randomness
             .exp(&pp.cl, &Mpz::from(scalar));
 
-        let multienc = &pvss_result.shares_ciphertext.encryption;
 
-        let pairwise_shares: BTreeMap<Id, Zq> =
-            multienc.iter().map(|(&id, _)| (id, Zq::random())).collect();
+        let pairwise_shares: BTreeMap<Id, Zq> = pvss_result.shares_ciphertext.encryption.iter().filter(|(&id, _)| id != my_id)
+        .map(|(&id, _)| (id, Zq::random())).collect();
 
-        let encryption = multienc
-            .iter()
+        let encryption = pvss_result.shares_ciphertext.encryption.iter().filter(|(&id, _)| id != my_id)
+            .par_bridge()
             .map(|(id, E)| {
                 let res = E
                     .exp(&pp.cl, &Mpz::from(scalar))
@@ -479,6 +478,7 @@ impl MtaDealing {
         let curve_macs = pvss_result
             .curve_macs
             .iter()
+            .filter(|(&id, _)| id != my_id)
             .map(|(&id, mac)| (id, scalar * mac + curve_generator * &pairwise_shares[&id]))
             .collect();
 
@@ -505,6 +505,7 @@ pub struct MtaNizk {
 impl MtaNizk {
     pub fn prove(
         pp: &PubParams,
+        sender_id: Id,
         pvss_result: &JointPvssResult,
         mta_dealing: &MtaDealing,
         mac_base: &G,
@@ -531,26 +532,27 @@ impl MtaNizk {
 
         let U2 = pvss_result.shares_ciphertext.randomness.exp(&pp.cl, &u1);
 
-        let U3 = QFPolynomial::new(&pp.cl, pp.n, &pvss_result.shares_ciphertext.encryption)
+        let U3 = QFPolynomial::new(&pp.cl, pp.n, 
+            &pvss_result.shares_ciphertext.encryption.clone().into_iter().filter(|(id, _)| *id!=sender_id).collect())
             .eval(&pp.cl, &gamma)
             .exp(&pp.cl, &u1)
             .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&u2)));
 
         // compute original macs from pvss_result.curve_polynomial
         // TODO: profile, and may make sense to reuse what's previously computed
-        let U4 = CurvePolynomial::new(pp.n, &pvss_result.curve_macs).eval(&gamma) * &u1_modq
+        let U4 = CurvePolynomial::new(pp.n, &pvss_result.curve_macs.clone().into_iter().filter(|(id, _)| *id!=sender_id).collect()).eval(&gamma) * &u1_modq
             + mac_base * &u2;
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);
         let z1 = &u1 + Mpz::from(&e) * Mpz::from(scalar);
         let z2 = Polynomial::new(pp.n, pairwise_shares).eval(&gamma) * &e + &u2;
-
         Self { e, z1, z2 }
     }
 
     pub fn verify(
         &self,
         pp: &PubParams,
+        sender_id: Id,
         pvss_result: &JointPvssResult,
         mta_dealing: &MtaDealing,
         mac_base: &G,
@@ -579,7 +581,7 @@ impl MtaNizk {
             .eval(&pp.cl, &gamma)
             .exp(&pp.cl, &-Mpz::from(&self.e));
 
-        let U3 = QFPolynomial::new(&pp.cl, pp.n, &pvss_result.shares_ciphertext.encryption)
+        let U3 = QFPolynomial::new(&pp.cl, pp.n, &pvss_result.shares_ciphertext.encryption.clone().into_iter().filter(|(id, _)| *id!=sender_id).collect())
             .eval(&pp.cl, &gamma)
             .exp(&pp.cl, &self.z1)
             .compose(&pp.cl, &pp.cl.power_of_f(&Mpz::from(&self.z2)))
@@ -589,7 +591,7 @@ impl MtaNizk {
         let z1_modq = Zq::from(BigInt::from_bytes(&self.z1.to_bytes()) % Zq::group_order());
 
         let U4 = mac_base * &self.z2
-            + CurvePolynomial::new(pp.n, &pvss_result.curve_macs).eval(&gamma) * &z1_modq
+            + CurvePolynomial::new(pp.n, &pvss_result.curve_macs.clone().into_iter().filter(|(id, _)| *id!=sender_id).collect()).eval(&gamma) * &z1_modq
             - CurvePolynomial::new(pp.n, &mta_dealing.curve_macs).eval(&gamma) * &self.e;
 
         let e = Self::challenge2(&gamma, &U1, &U2, &U3, &U4);

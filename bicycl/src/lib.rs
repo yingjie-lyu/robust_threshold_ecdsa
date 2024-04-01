@@ -139,8 +139,10 @@ impl<'a> Add<Mpz> for &'a Mpz {
     }
 }
 
-// TODO: @wangshuchao `*const u8` cannot be sent between threads safely
 unsafe impl Send for Mpz {
+}
+
+unsafe impl Sync for Mpz {
 }
 
 impl Clone for Mpz {
@@ -200,6 +202,9 @@ impl Mpz {
         }
     }
 }
+
+
+
 
 #[derive(Serialize, Deserialize)]
 struct SerializableMpz {
@@ -540,6 +545,12 @@ impl Clone for SecretKey {
             sk: self.sk.copy().within_box()
         }
     }
+}
+
+unsafe impl Send for SecretKey {
+}
+
+unsafe impl Sync for SecretKey {
 }
 
 pub struct PublicKey {
