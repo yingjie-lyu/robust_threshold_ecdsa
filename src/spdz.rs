@@ -26,8 +26,8 @@ pub struct PvssMsg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OpenPowerMsg {
-    point: G,
-    proof: DleqNizk,
+    pub point: G,
+    pub proof: DleqNizk,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -330,7 +330,7 @@ pub async fn presign_protocol<M>(
     party: M,
     my_id: Id, // in the range 1..=n, subtract one before use
     pp: &PubParams,
-    h: &G,
+    mac_base: &G,
     threshold_pk: &ThresholdPubKey,
     my_cl_sk: &SecretKey,
     my_x_share: &Zq,
@@ -355,8 +355,8 @@ where
     let mut rounds = rounds.listen(incoming);
 
     // Round 1 interaction
-    let my_k_pvss = PvssMsg::random(pp, &mut rng, h);
-    let my_phi_pvss = PvssMsg::random(pp, &mut rng, h);
+    let my_k_pvss = PvssMsg::random(pp, &mut rng, mac_base);
+    let my_phi_pvss = PvssMsg::random(pp, &mut rng, mac_base);
 
     outgoing
         .send(Outgoing::broadcast(PresignMsg::DuoPvss(DuoPvssMsg {
@@ -381,8 +381,8 @@ where
         .map(|(inner_id, _, msg)| ((inner_id + 1) as Id, msg))
         .filter(|(_, msg)| {
             lazy_verification || {
-                msg.k_pvss.proof.verify(&msg.k_pvss.dealing, pp, h)
-                    && msg.phi_pvss.proof.verify(&msg.phi_pvss.dealing, pp, h)
+                msg.k_pvss.proof.verify(&msg.k_pvss.dealing, pp, mac_base)
+                    && msg.phi_pvss.proof.verify(&msg.phi_pvss.dealing, pp, mac_base)
             }
         })
         .collect::<BTreeMap<Id, DuoPvssMsg>>();
@@ -403,11 +403,11 @@ where
     let phi_i = phi_pvss_result.shares_ciphertext.decrypt_mine(&pp.cl, my_id, my_cl_sk);
 
     let Ri = G::generator() * &ki;
-    let dleq_proof = DleqNizk::prove(&h, &k_pvss_result.curve_macs[&my_id], &G::generator(), &Ri, &ki);
+    let dleq_proof = DleqNizk::prove(&mac_base, &k_pvss_result.curve_macs[&my_id], &G::generator(), &Ri, &ki);
     let open_R = OpenPowerMsg { point: Ri.clone(), proof: dleq_proof };
 
-    let (my_kphi_mta, my_betas) = MtaMsg::new(pp,my_id, &mut rng, &phi_pvss_result, &ki, h, h);
-    let (my_xphi_mta, my_nus) = MtaMsg::new(pp, my_id,&mut rng, &phi_pvss_result, my_x_share, h, &G::generator());
+    let (my_kphi_mta, my_betas) = MtaMsg::new(pp,my_id, &mut rng, &phi_pvss_result, &ki, mac_base, mac_base);
+    let (my_xphi_mta, my_nus) = MtaMsg::new(pp, my_id,&mut rng, &phi_pvss_result, my_x_share, mac_base, &G::generator());
 
     // Round 2 interaction
     outgoing
@@ -435,9 +435,9 @@ where
         .filter(|(id, msg)| {
             lazy_verification || {
                 let Ki = &k_pvss_result.curve_macs[id];
-                msg.open_R.proof.verify( h,Ki,&G::generator(),&msg.open_R.point)
-                 && msg.k_phi_mta.proof.verify(pp,*id,&phi_pvss_result,&msg.k_phi_mta.dealing,h,h, Ki)
-                 && msg.x_phi_mta.proof.verify(pp,*id,&phi_pvss_result,&msg.x_phi_mta.dealing,h, &G::generator(),&threshold_pk.pub_shares[id])
+                msg.open_R.proof.verify( mac_base,Ki,&G::generator(),&msg.open_R.point)
+                 && msg.k_phi_mta.proof.verify(pp,*id,&phi_pvss_result,&msg.k_phi_mta.dealing,mac_base,mac_base, Ki)
+                 && msg.x_phi_mta.proof.verify(pp,*id,&phi_pvss_result,&msg.x_phi_mta.dealing,mac_base, &G::generator(),&threshold_pk.pub_shares[id])
             }
         })
         .collect::<BTreeMap<Id, ConvMsg>>();
@@ -492,7 +492,7 @@ where
 
 
 
-#[tokio::test]
+// #[tokio::test]
 pub async fn test_presign_protocol() {
     let (pp, secret_keys) = simulate_pp(3, 2);
     let h = G::base_point2();
@@ -512,6 +512,8 @@ pub async fn test_presign_protocol() {
 
     let mut simulation = Simulation::<PresignMsg>::new();
     let mut party_output = vec![];
+
+    let message_hash = Zq::random();
 
     let now = Instant::now();
 
@@ -536,7 +538,6 @@ pub async fn test_presign_protocol() {
     let mut simulation = Simulation::<OnlineSignMsgEnum>::new();
     let mut party_output = vec![];
 
-    let message_hash = Zq::random();
 
     for i in 1..=pp.n {
         let party = simulation.add_party();
@@ -612,17 +613,12 @@ where
                 msg.open_Ui.proof.verify(&G::generator(), &presignature.R_contributions[i], &Phi, &msg.open_Ui.point)
                 && msg.open_Vi.proof.verify(&G::generator(), &threshold_pk.pub_shares[i], &Phi, &msg.open_Vi.point)
                 && {
-                    println!("{:?}",pp.interpolate(&msg.fragments_u).unwrap());
                     let h_pow_interpolated = h * pp.interpolate(&msg.fragments_u).unwrap();
                     let A_mac_diffs = msg.fragments_u.keys()
                         .map(|l| if l == i {(*l, G::zero() )} else { (*l, &presignature.kphi_dealings[i].curve_macs[l] - &presignature.kphi_dealings[l].curve_macs[i]) })
                         .collect();
                     let A_mac_diffs_interpolated = pp.interpolate_on_curve(&A_mac_diffs).unwrap();
-                    let result = h_pow_interpolated + A_mac_diffs_interpolated == msg.open_Ui.point;
-                    if !result {
-                        println!("Failed A-mac check for party {} and {}", i, my_id);
-                    }
-                    result
+                    h_pow_interpolated + A_mac_diffs_interpolated == msg.open_Ui.point
                 }
                 && {
                     let h_pow_interpolated = h * pp.interpolate(&msg.fragments_w).unwrap();

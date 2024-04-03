@@ -661,6 +661,13 @@ impl CipherText {
             qfi: BICYCL::QFI::copy_from(self.ct.c2()).within_box()
         }
     }
+
+    /// Scales the ciphertext. Doesn't re-randomize, so make sure that you know what you're doing.
+    pub fn scal(&self, c: &CL_HSMqk, scalar: &Mpz) -> Self {
+        let c1 = self.c1().exp(c, scalar);
+        let c2 = self.c2().exp(c, scalar);
+        CipherText::new(&c1, &c2)
+    }
 }
 
 // TODO: @wangshuchao `*const u8` cannot be sent between threads safely
