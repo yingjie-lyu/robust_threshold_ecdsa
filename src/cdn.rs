@@ -2,6 +2,7 @@ use std::ops::Add;
 
 use bicycl::{CipherText, ClearText, Mpz, PublicKey, RandGen, QFI};
 use curv::{arithmetic::Converter, elliptic::curves::Secp256k1, BigInt};
+use itertools::Itertools;
 use crate::{spdz::OpenPowerMsg, utils::*};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -221,23 +222,24 @@ pub struct NonceExtractMaskMsg {
 
 impl NonceExtractMaskMsg {
     pub fn new(pp: &PubParams, rng: &mut RandGen, clpk: &PublicKey, ec_pub_share: &G, k_ciphertext: &CipherText, x_ciphertext: &CipherText,
-        R_ciphertext: &ElGamalCiphertext, xi: &Zq) -> Self {
-            let R_partial_dec = OpenPowerMsg::new(xi, &G::generator(), ec_pub_share, &R_ciphertext.c1);
-            let phi_i = Zq::random();
-            let cl_rand = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
-            
-            let phi_i_ciphertext = CipherText::new(&pp.cl.power_of_h(&cl_rand),
-                &pp.cl.power_of_f(&Mpz::from(&phi_i))
-                    .compose(&pp.cl, &clpk.exponentiation(&pp.cl, &cl_rand)));
+        R_ciphertext: &ElGamalCiphertext, xi: &Zq)
+    -> Self {
+        let R_partial_dec = OpenPowerMsg::new(xi, &G::generator(), ec_pub_share, &R_ciphertext.c1);
+        let phi_i = Zq::random();
+        let cl_rand = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
+        
+        let phi_i_ciphertext = CipherText::new(&pp.cl.power_of_h(&cl_rand),
+            &pp.cl.power_of_f(&Mpz::from(&phi_i))
+                .compose(&pp.cl, &clpk.exponentiation(&pp.cl, &cl_rand)));
 
-            let kphi_i_ciphertext = k_ciphertext.scal(&pp.cl, &Mpz::from(&phi_i));
-            let xphi_i_ciphertext = x_ciphertext.scal(&pp.cl, &Mpz::from(&phi_i));
+        let kphi_i_ciphertext = k_ciphertext.scal(&pp.cl, &Mpz::from(&phi_i));
+        let xphi_i_ciphertext = x_ciphertext.scal(&pp.cl, &Mpz::from(&phi_i));
 
-            let Phi_i = G::generator() * &phi_i;
+        let Phi_i = G::generator() * &phi_i;
 
-            let proof = CLScal2Nizk::prove(pp, rng, clpk, &phi_i_ciphertext, &G::generator(), &Phi_i, &k_ciphertext, &kphi_i_ciphertext, &x_ciphertext, &xphi_i_ciphertext, &phi_i, &cl_rand);
+        let proof = CLScal2Nizk::prove(pp, rng, clpk, &phi_i_ciphertext, &G::generator(), &Phi_i, &k_ciphertext, &kphi_i_ciphertext, &x_ciphertext, &xphi_i_ciphertext, &phi_i, &cl_rand);
 
-            Self { R_partial_dec, phi_i_ciphertext, kphi_i_ciphertext, xphi_i_ciphertext, Phi_i, proof }
+        Self { R_partial_dec, phi_i_ciphertext, kphi_i_ciphertext, xphi_i_ciphertext, Phi_i, proof }
         }
 
     pub fn verify(&self, pp: &PubParams, ec_pub_share: &G, R_ciphertext: &ElGamalCiphertext, clpk: &PublicKey, k_ciphertext: &CipherText, x_ciphertext: &CipherText) -> bool {
@@ -248,7 +250,43 @@ impl NonceExtractMaskMsg {
 }
 
 
-pub struct CLThresholdDec2Nizk {
-    pub e: Zq,
-    pub z: Zq,
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClassGroup3DleqNizk {
+    pub e: Mpz,
+    pub z: Mpz,
 }
+
+impl ClassGroup3DleqNizk {
+    pub fn prove(pp: &PubParams, rng: &mut RandGen, gen1: &QFI, pow1: &QFI, gen2: &QFI, pow2: &QFI, gen3: &QFI, pow3: &QFI, x: &Mpz) -> Self {
+        let u = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
+
+        let U1 = gen1.exp(&pp.cl, &u);
+        let U2 = gen2.exp(&pp.cl, &u);
+        let U3 = gen3.exp(&pp.cl, &u);
+        
+        let e = Self::challenge(gen1, pow1, gen2, pow2, gen3, pow3, &U1, &U2, &U3);
+        let z = &u + e.clone() * x;
+
+        Self { e, z }
+    }
+
+    pub fn verify(&self, pp: &PubParams, gen1: &QFI, pow1: &QFI, gen2: &QFI, pow2: &QFI, gen3: &QFI, pow3: &QFI) -> bool {
+        let neg_e = -self.e.clone();
+        let U1 = gen1.exp(&pp.cl, &self.z).compose(&pp.cl, &pow1.exp(&pp.cl, &neg_e));
+        let U2 = gen2.exp(&pp.cl, &self.z).compose(&pp.cl, &pow2.exp(&pp.cl, &neg_e));
+        let U3 = gen3.exp(&pp.cl, &self.z).compose(&pp.cl, &pow3.exp(&pp.cl, &neg_e));
+
+        let e = Self::challenge(gen1, pow1, gen2, pow2, gen3, pow3, &U1, &U2, &U3);
+        e == self.e
+    }
+
+    fn challenge(gen1: &QFI, pow1: &QFI, gen2: &QFI, pow2: &QFI, gen3: &QFI, pow3: &QFI, U1: &QFI, U2: &QFI, U3: &QFI) -> Mpz {
+        let mut hasher = Sha256::new();
+        for item in [gen1, pow1, gen2, pow2, gen3, pow3, U1, U2, U3] {
+            hasher.update(item.to_bytes());
+        }
+        Mpz::from_bytes(&hasher.finalize()[..16])
+    }
+}
+
+

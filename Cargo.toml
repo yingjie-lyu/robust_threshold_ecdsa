@@ -18,6 +18,7 @@ sha2 = "0.10.6"
 bicycl = { path = "./bicycl"}
 chrono = "0.4.33"
 rayon = "1.9"
+itertools = "0.12"
 
 [profile.release]
 debug = true
