@@ -21,7 +21,7 @@ use robust_threshold_ecdsa::spdz;
 #[tokio::main]
 async fn main() {
     // println!("Hello, world!");
-    spdz::test_presign_protocol().await;
+    spdz::test_signing(20, 19).await;
 }
 
 

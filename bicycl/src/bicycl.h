@@ -4572,8 +4572,8 @@ namespace BICYCL
         public:
             /* constructors */
             SecretKey (const CL_HSMqk &C, const Mpz &v) : Mpz (v) {
-                if (!(v.sgn() >= 0 && v < C.secretkey_bound()))
-                    throw std::range_error ("Secret key is negative or too large");
+                if (!(v.sgn() >= 0))
+                    throw std::range_error ("Secret key is negative");
             }
             SecretKey (const CL_HSMqk &C, RandGen &r) : Mpz (r.random_mpz (C.secretkey_bound())) {
             }

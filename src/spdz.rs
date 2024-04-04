@@ -32,8 +32,8 @@ pub struct OpenPowerMsg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThresholdPubKey {
-    pk: G,
-    pub_shares: BTreeMap<Id, G>,
+    pub pk: G,
+    pub pub_shares: BTreeMap<Id, G>,
 }
 
 impl PvssMsg {
@@ -490,11 +490,14 @@ where
     })
 }
 
+#[tokio::test]
+pub async fn test_3_2_signing() {
+    test_signing(3, 2).await;
+}
 
 
-// #[tokio::test]
-pub async fn test_presign_protocol() {
-    let (pp, secret_keys) = simulate_pp(3, 2);
+pub async fn test_signing(n: Id, t: Id) {
+    let (pp, secret_keys) = simulate_pp(n, t);
     let h = G::base_point2();
 
     // simulate threshold public & secret keys
@@ -527,13 +530,13 @@ pub async fn test_presign_protocol() {
             &threshold_pk,
             &secret_keys[&i],
             &x_shares[&i],
-            true,
+            false,
         );
         party_output.push(result);
     }
 
     let output = futures::future::try_join_all(party_output).await.unwrap();
-    println!("Presign time per party: {:.2?}", now.elapsed() / pp.n as u32);
+    println!("Presign time per party: {:.4?}", now.elapsed() / pp.n as u32);
 
     let mut simulation = Simulation::<OnlineSignMsgEnum>::new();
     let mut party_output = vec![];
@@ -554,7 +557,7 @@ pub async fn test_presign_protocol() {
         party_output.push(result);
     }
     let output = futures::future::try_join_all(party_output).await.unwrap();
-    println!("Total time per party: {:.2?}", now.elapsed() / pp.n as u32);
+    println!("Total time per party: {:.4?}", now.elapsed() / pp.n as u32);
 }
 
 pub async fn online_sign_protocol<M>(
@@ -657,3 +660,4 @@ where
 
     Ok(ECDSASignature { r: presignature.r, s })
 }
+

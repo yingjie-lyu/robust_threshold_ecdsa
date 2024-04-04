@@ -26,7 +26,7 @@ use cxx::{CxxString, let_cxx_string};
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
 use curv::{
-    arithmetic::{BasicOps, Converter, Samplable},
+    // arithmetic::Converter,
     elliptic::curves::{Point, Scalar, Secp256k1},
     BigInt,
 };
@@ -61,7 +61,7 @@ impl<'a> From<&'a str> for Mpz {
 
 impl<'a> From<&'a Scalar<Secp256k1>> for Mpz {
     fn from(value: &'a Scalar<Secp256k1>) -> Self {
-        Mpz::from_bytes(value.to_bigint().to_bytes().as_slice())
+        Mpz::from_bytes(curv::arithmetic::Converter::to_bytes(&value.to_bigint()).as_slice())
     }
 }
 

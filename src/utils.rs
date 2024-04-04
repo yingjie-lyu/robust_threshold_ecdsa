@@ -165,7 +165,7 @@ impl CLMultiRecvCiphertext {
     }
 }
 
-type CLKeyRing = BTreeMap<Id, PublicKey>;
+pub type CLKeyRing = BTreeMap<Id, PublicKey>;
 
 pub struct PubParams {
     pub cl: CL_HSMqk,
