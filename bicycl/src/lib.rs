@@ -674,6 +674,9 @@ impl CipherText {
 unsafe impl Send for CipherText {
 }
 
+unsafe impl Sync for CipherText {
+}
+
 impl Clone for CipherText {
     fn clone(&self) -> Self {
         CipherText {

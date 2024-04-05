@@ -1,9 +1,10 @@
-use std::{collections::BTreeMap, ops::Add};
+use std::{collections::BTreeMap, ops::Add, time::Instant};
 
 use bicycl::{CL_HSMqk, CipherText, ClearText, Mpz, PublicKey, RandGen, SecretKey, QFI};
-use curv::{arithmetic::Converter, elliptic::curves::Secp256k1, BigInt};
-use futures::SinkExt;
+use curv::{arithmetic::Converter, cryptographic_primitives::proofs::low_degree_exponent_interpolation, elliptic::curves::Secp256k1, BigInt};
+use futures::{stream::{futures_unordered::Iter, once}, SinkExt};
 use itertools::Itertools;
+use rayon::iter::{ParallelBridge, ParallelIterator};
 use thiserror::Error;
 use crate::{spdz::{OpenPowerMsg, ThresholdPubKey}, utils::*};
 use serde::{Deserialize, Serialize};
@@ -137,7 +138,7 @@ impl NonceProposalMsg {
 pub struct CLScal2Nizk {
     pub e: Zq,
     pub z1: Mpz,
-    pub z2: Zq,
+    pub z2: Mpz,
 }
 
 impl CLScal2Nizk {
@@ -157,9 +158,9 @@ impl CLScal2Nizk {
         let U6 = orig_ct2.c1().exp(&pp.cl,&Mpz::from(&u2));
         let U7 = orig_ct2.c2().exp(&pp.cl,&Mpz::from(&u2));
 
-        let e = Self::challenge(&pp.pk, scalar_ct, scalar_pub, base, orig_ct1, scaled_ct1, orig_ct2, scaled_ct2, &U1, &U2, &U3, &U4, &U5, &U6, &U7);
+        let e = Self::challenge(&pp.pk, scalar_ct, base, scalar_pub, orig_ct1, scaled_ct1, orig_ct2, scaled_ct2, &U1, &U2, &U3, &U4, &U5, &U6, &U7);
         let z1 = &u1 + Mpz::from(&e) * cl_rand;
-        let z2 = &u2 + &e * scalar;
+        let z2 = Mpz::from(&u2) + Mpz::from(&e) * Mpz::from(scalar);
 
         Self { e, z1, z2 }
     }
@@ -168,21 +169,25 @@ impl CLScal2Nizk {
         orig_ct1: &CipherText, scaled_ct1: &CipherText, orig_ct2: &CipherText, scaled_ct2: &CipherText)
     -> bool {
         let U1 = pp.cl.power_of_h(&self.z1).compose(&pp.cl, &scalar_ct.c1().exp(&pp.cl, &-Mpz::from(&self.e)));
-        let U2 = pp.cl.power_of_f(&Mpz::from(&self.z2))
+        let U2 = pp.cl.power_of_f(&self.z2)
                            .compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &self.z1))
                            .compose(&pp.cl, &scalar_ct.c2().exp(&pp.cl, &-Mpz::from(&self.e)));
-        let U3 = base * &self.z2 - scalar_pub * &self.e;
-        let U4 = orig_ct1.c1().exp(&pp.cl,&Mpz::from(&self.z2))
+        let z2_modq = Zq::from(BigInt::from_bytes(&self.z2.to_bytes()) % Zq::group_order());
+        let U3 = base * z2_modq - scalar_pub * &self.e;
+        let U4 = orig_ct1.c1().exp(&pp.cl,&self.z2)
                         .compose(&pp.cl, &scaled_ct1.c1().exp(&pp.cl, &-Mpz::from(&self.e)));
-        let U5 = orig_ct1.c2().exp(&pp.cl,&Mpz::from(&self.z2))
+        let U5 = orig_ct1.c2().exp(&pp.cl,&self.z2)
                         .compose(&pp.cl, &scaled_ct1.c2().exp(&pp.cl, &-Mpz::from(&self.e)));
-        let U6 = orig_ct2.c1().exp(&pp.cl,&Mpz::from(&self.z2))
+        let U6 = orig_ct2.c1().exp(&pp.cl,&self.z2)
                         .compose(&pp.cl, &scaled_ct2.c1().exp(&pp.cl, &-Mpz::from(&self.e)));
-        let U7 = orig_ct2.c2().exp(&pp.cl,&Mpz::from(&self.z2))
+        let U7 = orig_ct2.c2().exp(&pp.cl,&self.z2)
                         .compose(&pp.cl, &scaled_ct2.c2().exp(&pp.cl, &-Mpz::from(&self.e)));
 
         let e = Self::challenge(&pp.pk, scalar_ct, base, scalar_pub, orig_ct1, scaled_ct1, orig_ct2, scaled_ct2, &U1, &U2, &U3, &U4, &U5, &U6, &U7);
-        e == self.e
+
+        let result = e == self.e;
+        assert!(result);
+        result
     }
 
     fn challenge(pk: &PublicKey, scalar_ct: &CipherText, base: &G, scalar_pub: &G,
@@ -349,16 +354,47 @@ impl ThresholdCLPubParams {
 
         (Self { cl, t, n, n_factorial, pk, pub_shares }, secret_shares)
     }
+
+    pub fn lagrange_coeffs(&self, parties: Vec<Id>) -> Option<BTreeMap<Id, Zq>> {
+        if parties.len() < self.t as usize {
+            return None;
+        }
+
+        let mut coeffs = BTreeMap::new();
+        for i in &parties {
+            let mut num = Zq::from(1u64);
+            let mut den = Zq::from(1u64);
+            for j in &parties {
+                if i != j {
+                    num = num * Zq::from(*j as u64);
+                    den = den * Zq::from(*j as i32 - *i as i32);
+                }
+            }
+            coeffs.insert(*i, num * den.invert().unwrap());
+        }
+        Some(coeffs)
+    }
+
+    pub fn interpolate(&self, shares: &BTreeMap<Id, Zq>) -> Option<Zq> {
+        let lagrange_coeffs = self.lagrange_coeffs(shares.keys().cloned().collect())?;
+        Some(
+            shares
+                .iter()
+                .map(|(i, share)| &lagrange_coeffs[i] * share)
+                .sum(),
+        )
+    }
+
+    /// interpolates the constant term of certain points from a point polynomial
+    pub fn interpolate_on_curve(&self, points: &BTreeMap<Id, G>) -> Option<G> {
+        let lagrange_coeffs = self.lagrange_coeffs(points.keys().cloned().collect())?;
+        Some(points
+            .iter()
+            .map(|(i, point)| point * &lagrange_coeffs[i])
+            .sum())
+}
 }
 
-#[tokio::test]
-pub async fn test_simulate_pp() {
-    let n = 10;
-    let t = 9;
-
-    let (pp, secrets) = ThresholdCLPubParams::simulate(n, t);
-
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OnlineSignMsg {
@@ -432,10 +468,13 @@ where M: Mpc<ProtocolMessage = PresignMsg>
     Ri_ciphertexts.insert(my_id, my_proposal.Ri_ciphertext);
 
     // Round 1 processing
-    nonce_proposal_messages.into_iter_indexed()
+    let filtered_proposals = nonce_proposal_messages.into_iter_indexed()
         .map(|(inner_id, _, msg)| ((inner_id + 1) as Id, msg))
+        .par_bridge()
         .filter(|(_, msg)| lazy_verification || msg.verify(pp, &threshold_pk.pk))
-        .take(pp.t as usize)
+        .collect::<BTreeMap<Id, NonceProposalMsg>>();
+
+    filtered_proposals.into_iter().take(pp.t as usize)
         .for_each(|(i, msg)| {
             ki_ciphertexts.insert(i, msg.ki_ciphertext);
             Ri_ciphertexts.insert(i, msg.Ri_ciphertext);
@@ -462,23 +501,26 @@ where M: Mpc<ProtocolMessage = PresignMsg>
     let mut kphi_i_ciphertexts = BTreeMap::new();
     let mut xphi_i_ciphertexts = BTreeMap::new();
 
-    R_partial_decs.insert(my_id, my_extract_mask.R_partial_dec);
+    R_partial_decs.insert(my_id, my_extract_mask.R_partial_dec.point);
     phi_i_ciphertexts.insert(my_id, my_extract_mask.phi_i_ciphertext);
     kphi_i_ciphertexts.insert(my_id, my_extract_mask.kphi_i_ciphertext);
     xphi_i_ciphertexts.insert(my_id, my_extract_mask.xphi_i_ciphertext);
 
     // Round 2 processing
-    nonce_extract_mask_messages.into_iter_indexed()
+    let filtered_ext_mask_messages = nonce_extract_mask_messages.into_iter_indexed()
         .map(|(inner_id, _, msg)| ((inner_id + 1) as Id, msg))
+        .par_bridge()
         .filter(|(i, msg)| lazy_verification || msg.verify(pp, &threshold_pk.pub_shares[&i], &R_ciphertext, &k_ciphertext, x_ciphertext))
-        .take(pp.t as usize)
+        .collect::<BTreeMap<Id, NonceExtractMaskMsg>>();
+
+    filtered_ext_mask_messages.into_iter().take(pp.t as usize)
         .for_each(|(i, msg)| {
-            R_partial_decs.insert(i, msg.R_partial_dec);
+            R_partial_decs.insert(i, msg.R_partial_dec.point);
             phi_i_ciphertexts.insert(i, msg.phi_i_ciphertext);
             kphi_i_ciphertexts.insert(i, msg.kphi_i_ciphertext);
             xphi_i_ciphertexts.insert(i, msg.xphi_i_ciphertext);
         });
-    
+
     let phi_ct = phi_i_ciphertexts.values().cloned().take(pp.t as usize)
         .reduce(| acc, ct | 
             CipherText::new(&acc.c1().compose(&pp.cl, &ct.c1()), 
@@ -489,5 +531,38 @@ where M: Mpc<ProtocolMessage = PresignMsg>
             CipherText::new(&acc.c1().compose(&pp.cl, &ct.c1()), 
                          &acc.c2().compose(&pp.cl, &ct.c2()))).unwrap();
 
-    todo!()
+    let R = pp.interpolate_on_curve(&R_partial_decs).unwrap();
+    let r = Zq::from_bigint(&R.x_coord().unwrap());
+
+    Ok(PresignResult { r, phi_ct, rxphi_ct })
+}
+
+#[tokio::test]
+pub async fn test_signing() {
+    let n = 20;
+    let t = 15;
+
+    let (pp, secret_keys) = ThresholdCLPubParams::simulate(n, t);
+    let (threshold_pk, x_shares, x) = ThresholdPubKey::simulate(n, t);
+    
+    let mut rng = RandGen::new();
+    rng.set_seed(&Mpz::from(&Zq::random()));
+    let r = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
+    let x_ciphertext = CipherText::new(&pp.cl.power_of_h(&r), &pp.cl.power_of_f(&Mpz::from(&x)).compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &r)));
+
+
+    let mut simulation = Simulation::<PresignMsg>::new();
+    let mut party_output = vec![];
+
+    let now = Instant::now();
+
+    for i in 1..=pp.n {
+        let party = simulation.add_party();
+        let result = presign_protocol(party, i, &pp, &threshold_pk, &secret_keys[&i], &x_ciphertext, &x_shares[&i], false);
+        party_output.push(result);
+    }
+
+    let output = futures::future::try_join_all(party_output).await.unwrap();
+    println!("Presign time per party: {:.4?}", now.elapsed() / pp.n as u32);
+
 }

@@ -36,6 +36,26 @@ pub struct ThresholdPubKey {
     pub pub_shares: BTreeMap<Id, G>,
 }
 
+impl ThresholdPubKey {
+    pub fn simulate(n: Id, t: Id) -> (Self, BTreeMap<Id, Zq>, Zq) {
+        let coeffs: Vec<_> = (0..t).map(|_| Zq::random()).collect();
+        let x = coeffs[0].clone();
+
+        let polynomial = Polynomial { coeffs };
+        let curve_polynomial = CurvePolynomial::from_exp(&polynomial, &G::generator());
+
+        let threshold_pk = ThresholdPubKey {
+            pk: curve_polynomial.coeffs[0].clone(),
+            pub_shares: (1..=n).map(|i| (i, curve_polynomial.eval(&Zq::from(i as u64)))).collect(),
+        };
+
+        let x_shares: BTreeMap<Id, Zq> = (1..=n).map(|i| (i, polynomial.eval(&Zq::from(i as u64)))).collect();
+
+        (threshold_pk, x_shares, x)
+    }
+}
+
+
 impl PvssMsg {
     pub fn random(pp: &PubParams, rng: &mut RandGen, curve_generator: &G) -> Self {
         let (dealing, r, _, shares) = PvssDealing::random(pp, rng, curve_generator);
@@ -500,18 +520,7 @@ pub async fn test_signing(n: Id, t: Id) {
     let (pp, secret_keys) = simulate_pp(n, t);
     let h = G::base_point2();
 
-    // simulate threshold public & secret keys
-    let coeffs = (0..pp.t).map(|_| Zq::random()).collect();
-    let polynomial = Polynomial { coeffs };
-    let curve_polynomial = CurvePolynomial::from_exp(&polynomial, &G::generator());
-
-    let threshold_pk = ThresholdPubKey {
-        pk: curve_polynomial.coeffs[0].clone(),
-        pub_shares: (1..=pp.n).map(|i| (i, curve_polynomial.eval(&Zq::from(i as u64)))).collect(),
-    };
-
-    let x_shares: BTreeMap<Id, Zq> = (1..=pp.n).map(|i| (i, polynomial.eval(&Zq::from(i as u64)))).collect();
-
+    let (threshold_pk, x_shares, x) = ThresholdPubKey::simulate(n, t);
 
     let mut simulation = Simulation::<PresignMsg>::new();
     let mut party_output = vec![];
