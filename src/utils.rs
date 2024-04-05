@@ -26,6 +26,13 @@ pub type Zq = Scalar<Secp256k1>;
 pub type G = Point<Secp256k1>;
 pub type Id = u8;
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ECDSASignature {
+    pub r: Zq,
+    pub s: Zq,
+
+}
+
 /// Polynomial defined over Zq, with coefficients in ascending order
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Polynomial {
@@ -667,9 +674,7 @@ impl DleqNizk {
         let U2 = gen2 * &self.z - pow2 * &self.e;
         let e = Self::challenge(gen1, pow1, gen2, pow2, &U1, &U2);
 
-        let result = e == self.e;
-        assert!(result);
-        result
+        e == self.e
     }
 
     fn challenge(gen1: &G, pow1: &G, gen2: &G, pow2: &G, U1: &G, U2: &G) -> Zq {

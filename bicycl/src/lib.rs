@@ -490,6 +490,12 @@ impl CL_HSMqk {
         }
     }
 
+    pub fn dlog_in_F(&self, q: &QFI) -> Mpz {
+        Mpz {
+            mpz: self.c.dlog_in_F(&*q.qfi).within_box(),
+        }
+    }
+
     pub fn add_ciphertexts(&self, pk: &PublicKey, ca: &CipherText, cb: &CipherText, rand_gen: &mut RandGen) -> CipherText {
         CipherText {
             ct: self.c.add_ciphertexts(&*pk.pk, &*ca.ct, &*cb.ct, rand_gen.rand_gen.as_mut()).within_box(),

@@ -337,12 +337,7 @@ pub struct PresignResult {
     pub R_contributions: BTreeMap<Id, G>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ECDSASignature {
-    pub r: Zq,
-    pub s: Zq,
 
-}
 
 /// Note: there are quite a few temporaries so we refrain from splitting
 ///  the presigning and signing protocols into separate functions.

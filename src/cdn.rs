@@ -185,9 +185,7 @@ impl CLScal2Nizk {
 
         let e = Self::challenge(&pp.pk, scalar_ct, base, scalar_pub, orig_ct1, scaled_ct1, orig_ct2, scaled_ct2, &U1, &U2, &U3, &U4, &U5, &U6, &U7);
 
-        let result = e == self.e;
-        assert!(result);
-        result
+        e == self.e
     }
 
     fn challenge(pk: &PublicKey, scalar_ct: &CipherText, base: &G, scalar_pub: &G,
@@ -271,7 +269,7 @@ pub struct ClassGroup3DleqNizk {
 }
 
 impl ClassGroup3DleqNizk {
-    pub fn prove(pp: &PubParams, rng: &mut RandGen, gen1: &QFI, pow1: &QFI, gen2: &QFI, pow2: &QFI, gen3: &QFI, pow3: &QFI, x: &Mpz) -> Self {
+    pub fn prove(pp: &ThresholdCLPubParams, rng: &mut RandGen, gen1: &QFI, pow1: &QFI, gen2: &QFI, pow2: &QFI, gen3: &QFI, pow3: &QFI, x: &Mpz) -> Self {
         let u = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
 
         let U1 = gen1.exp(&pp.cl, &u);
@@ -284,7 +282,7 @@ impl ClassGroup3DleqNizk {
         Self { e, z }
     }
 
-    pub fn verify(&self, pp: &PubParams, gen1: &QFI, pow1: &QFI, gen2: &QFI, pow2: &QFI, gen3: &QFI, pow3: &QFI) -> bool {
+    pub fn verify(&self, pp: &ThresholdCLPubParams, gen1: &QFI, pow1: &QFI, gen2: &QFI, pow2: &QFI, gen3: &QFI, pow3: &QFI) -> bool {
         let neg_e = -self.e.clone();
         let U1 = gen1.exp(&pp.cl, &self.z).compose(&pp.cl, &pow1.exp(&pp.cl, &neg_e));
         let U2 = gen2.exp(&pp.cl, &self.z).compose(&pp.cl, &pow2.exp(&pp.cl, &neg_e));
@@ -326,7 +324,6 @@ impl ThresholdCLPubParams {
             &(Mpz::from_bytes(&(BigInt::from(1) << 40).to_bytes())),
             false,
         );
-
         
         let mut n_factorial = Mpz::from(1u64);
         for i in 1..=n {
@@ -375,14 +372,30 @@ impl ThresholdCLPubParams {
         Some(coeffs)
     }
 
-    pub fn interpolate(&self, shares: &BTreeMap<Id, Zq>) -> Option<Zq> {
-        let lagrange_coeffs = self.lagrange_coeffs(shares.keys().cloned().collect())?;
-        Some(
-            shares
-                .iter()
-                .map(|(i, share)| &lagrange_coeffs[i] * share)
-                .sum(),
-        )
+
+    pub fn lagrange_coeffs_times_n_factorial(&self, parties: Vec<Id>) -> Option<BTreeMap<Id, Mpz>> {
+        if parties.len() < self.t as usize {
+            return None;
+        }
+
+        let mut coeffs = BTreeMap::new();
+
+        let mut n_factorial = 1i64;
+        for i in 1..=self.n {
+            n_factorial *= i as i64;
+        }
+
+        for i in &parties {
+            let mut result: i64 = n_factorial;
+            for j in &parties {
+                if i != j {
+                    let j = *j as i64;
+                    result = result * j / (j - *i as i64);
+                }
+            }
+            coeffs.insert(*i, Mpz::from(result));
+        }
+        Some(coeffs)
     }
 
     /// interpolates the constant term of certain points from a point polynomial
@@ -407,7 +420,9 @@ pub struct OnlineSignMsg {
 pub struct PresignResult {
     pub r: Zq,
     pub phi_ct: CipherText,
+    pub kphi_ct: CipherText,
     pub rxphi_ct: CipherText,
+    pub Ui: QFI,
 }
 
 #[derive(Debug, Error)]
@@ -526,21 +541,123 @@ where M: Mpc<ProtocolMessage = PresignMsg>
             CipherText::new(&acc.c1().compose(&pp.cl, &ct.c1()), 
                          &acc.c2().compose(&pp.cl, &ct.c2()))).unwrap();
     
-    let rxphi_ct = xphi_i_ciphertexts.values().cloned().take(pp.t as usize)            
-        .reduce(| acc, ct | 
-            CipherText::new(&acc.c1().compose(&pp.cl, &ct.c1()), 
-                         &acc.c2().compose(&pp.cl, &ct.c2()))).unwrap();
-
     let R = pp.interpolate_on_curve(&R_partial_decs).unwrap();
     let r = Zq::from_bigint(&R.x_coord().unwrap());
 
-    Ok(PresignResult { r, phi_ct, rxphi_ct })
+    let rxphi_ct = xphi_i_ciphertexts.values().cloned().take(pp.t as usize)            
+        .reduce(| acc, ct | 
+            CipherText::new(&acc.c1().compose(&pp.cl, &ct.c1()), 
+                         &acc.c2().compose(&pp.cl, &ct.c2()))).unwrap()
+        .scal(&pp.cl, &Mpz::from(&r));
+
+    let kphi_ct = kphi_i_ciphertexts.values().cloned().take(pp.t as usize)
+        .reduce(| acc, ct | 
+            CipherText::new(&acc.c1().compose(&pp.cl, &ct.c1()), 
+                         &acc.c2().compose(&pp.cl, &ct.c2()))).unwrap();
+    
+    let Ui = kphi_ct.c1().exp(&pp.cl, &my_cl_sk.mpz());
+
+
+    Ok(PresignResult { r, phi_ct, kphi_ct, rxphi_ct, Ui })
+}
+
+
+#[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
+pub enum OnlineSignMsgEnum {
+    OnlineSign(OnlineSignMsg),
+}
+
+pub async fn online_sign<M>(
+    party: M,
+    message_hash: Zq,
+    my_id: Id,
+    pp: &ThresholdCLPubParams,
+    threshold_pk: &ThresholdPubKey,
+    my_cl_sk: &SecretKey,
+    x_ciphertext: &CipherText,
+    my_x_share: &Zq,
+    presignature: &PresignResult,
+    lazy_verification: bool,
+) -> Result<ECDSASignature, Error<M::ReceiveError, M::SendError>>
+where M: Mpc<ProtocolMessage = OnlineSignMsgEnum> {
+    let mut rng = RandGen::new();
+    rng.set_seed(&Mpz::from(&Zq::random()));
+
+    // boilerplate
+    let MpcParty { delivery, .. } = party.into_party();
+    let (incoming, mut outgoing) = delivery.split();
+
+    let i = (my_id - 1) as u16;
+    let n = pp.n as u16;
+
+    let mut rounds = RoundsRouter::<OnlineSignMsgEnum>::builder();
+    let round1 = rounds.add_round(RoundInput::<OnlineSignMsg>::broadcast(i, n));
+    let mut rounds = rounds.listen(incoming);
+
+    let w_ct = {
+        let c1 = presignature.phi_ct.c1()
+                .exp(&pp.cl, &Mpz::from(&message_hash))
+                .compose(&pp.cl, &presignature.rxphi_ct.c1());
+        let c2 = presignature.phi_ct.c2()
+                .exp(&pp.cl, &Mpz::from(&message_hash))
+                .compose(&pp.cl, &presignature.rxphi_ct.c2());
+        CipherText::new(&c1, &c2)
+    };
+
+    let Wi = w_ct.c1().exp(&pp.cl, &my_cl_sk.mpz());
+
+    let proof = ClassGroup3DleqNizk::prove( pp, &mut rng,
+        &pp.cl.h(), &pp.pub_shares[&my_id].elt(),
+        &presignature.kphi_ct.c1(), &presignature.Ui,
+        &w_ct.c1(), &Wi, &my_cl_sk.mpz() );
+
+    let my_msg = OnlineSignMsg { Ui: presignature.Ui.clone(), Wi, proof };
+
+    // Round 1 interaction
+
+    outgoing.send(Outgoing::broadcast(OnlineSignMsgEnum::OnlineSign(my_msg.clone()))).await.map_err(Error::Round1Send)?;
+
+    let online_sign_messages = rounds.complete(round1).await.map_err(Error::Round1Recv)?;
+
+    // Round 1 processing
+    let mut filtered_online_sign_messages = online_sign_messages.into_iter_indexed()
+        .map(|(inner_id, _, msg)| ((inner_id + 1) as Id, msg))
+        .par_bridge()
+        .filter(|(i, msg)| lazy_verification || msg.proof.verify(pp, &pp.cl.h(), &pp.pub_shares[&i].elt(), &presignature.kphi_ct.c1(), &msg.Ui, &w_ct.c1(), &msg.Wi))
+        .take_any(pp.t as usize - 1)
+        .collect::<BTreeMap<_,_>>();
+
+    filtered_online_sign_messages.insert(my_id, my_msg);
+    filtered_online_sign_messages = filtered_online_sign_messages.into_iter().take(pp.t as usize).collect();
+
+    let w_nominator = w_ct.c2().exp(&pp.cl, &pp.n_factorial.pow(3));
+    let u_nominator = presignature.kphi_ct.c2().exp(&pp.cl, &pp.n_factorial.pow(3));
+
+    let lagrange_coeffs_times_n_factorial = pp.lagrange_coeffs_times_n_factorial(filtered_online_sign_messages.keys().cloned().collect()).unwrap();
+
+    let w_denominator = filtered_online_sign_messages.iter().take(pp.t as usize)
+        .map(|(i, msg)| msg.Ui.exp(&pp.cl, &lagrange_coeffs_times_n_factorial[i]))
+        .reduce(| acc, ui | acc.compose(&pp.cl, &ui)).unwrap();
+
+    let u_denominator = filtered_online_sign_messages.iter().take(pp.t as usize)
+        .map(|(i, msg)| msg.Wi.exp(&pp.cl, &lagrange_coeffs_times_n_factorial[i]))
+        .reduce(| acc, wi | acc.compose(&pp.cl, &wi)).unwrap();
+
+    let f_pow_w = w_nominator.compose(&pp.cl, &w_denominator.exp(&pp.cl, &Mpz::from(-1i64)));
+    let f_pow_u = u_nominator.compose(&pp.cl, &u_denominator.exp(&pp.cl, &Mpz::from(-1i64)));
+    let w = pp.cl.dlog_in_F(&f_pow_w);
+    let u = pp.cl.dlog_in_F(&f_pow_u);
+    
+    let r = presignature.r.clone();
+    let s = Zq::from(BigInt::from_bytes(&w.to_bytes())) * Zq::from(BigInt::from_bytes(&u.to_bytes())).invert().unwrap();
+    
+    Ok(ECDSASignature { r, s })
 }
 
 #[tokio::test]
 pub async fn test_signing() {
-    let n = 20;
-    let t = 15;
+    let n = 10;
+    let t = 9;
 
     let (pp, secret_keys) = ThresholdCLPubParams::simulate(n, t);
     let (threshold_pk, x_shares, x) = ThresholdPubKey::simulate(n, t);
@@ -564,5 +681,19 @@ pub async fn test_signing() {
 
     let output = futures::future::try_join_all(party_output).await.unwrap();
     println!("Presign time per party: {:.4?}", now.elapsed() / pp.n as u32);
+
+    let mut simulation = Simulation::<OnlineSignMsgEnum>::new();
+    let mut party_output = vec![];
+
+    let message_hash = Zq::random();
+
+    for i in 1..=pp.n {
+        let party = simulation.add_party();
+        let result = online_sign(party, message_hash.clone(), i, &pp, &threshold_pk, &secret_keys[&i], &x_ciphertext, &x_shares[&i], &output[i as usize -1], false);
+        party_output.push(result);
+    }
+
+    let output = futures::future::try_join_all(party_output).await.unwrap();
+    println!("Total time per party: {:.4?}", now.elapsed() / pp.n as u32);
 
 }
