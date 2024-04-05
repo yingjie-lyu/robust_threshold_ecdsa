@@ -1,6 +1,9 @@
+#![allow(non_snake_case)]
+#![allow(non_camel_case_types)]
+
 use std::fmt::{Debug, Formatter};
 use std::iter::Sum;
-use std::ops::{Add, Mul, Neg};
+use std::ops::{Add, Div, Mul, Neg, Sub};
 use autocxx::prelude::*;
 include_cpp! {
     #include "bicycl.h"
@@ -21,15 +24,10 @@ include_cpp! {
 
 use std::pin::Pin;
 use crate::ffi::BICYCL;
-use autocxx::{c_long, c_ulong};
-use cxx::{CxxString, let_cxx_string};
+use cxx::let_cxx_string;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
-use curv::{
-    // arithmetic::Converter,
-    elliptic::curves::{Point, Scalar, Secp256k1},
-    BigInt,
-};
+use curv::elliptic::curves::{Scalar, Secp256k1};
 pub struct Mpz {
     mpz: Pin<Box<BICYCL::Mpz>>,
 }
@@ -102,6 +100,32 @@ impl<'a> Mul<&'a Mpz> for Mpz {
     }
 }
 
+impl Div for Mpz {
+    type Output = Self;
+
+    /// Divexact under the hood, know what you are doing
+    fn div(self, rhs: Self) -> Self::Output {
+        let mut r = BICYCL::Mpz::new().within_box();
+        BICYCL::Mpz::divexact(r.as_mut(), &*self.mpz, &*rhs.mpz);
+        Mpz {
+            mpz: r,
+        }
+    }
+}
+
+impl<'a> Div<&'a Mpz> for Mpz {
+    type Output = Mpz;
+
+    /// Divexact under the hood, know what you are doing
+    fn div(self, rhs: &'a Mpz) -> Mpz {
+        let mut r = BICYCL::Mpz::new().within_box();
+        BICYCL::Mpz::divexact(r.as_mut(), &*self.mpz, &*rhs.mpz);
+        Mpz {
+            mpz: r,
+        }
+    }
+}
+
 impl Sum for Mpz {
     fn sum<I: Iterator<Item=Self>>(iter: I) -> Self {
         let mut result = BICYCL::Mpz::new3(c_ulong::from(0)).within_box();
@@ -133,6 +157,30 @@ impl<'a> Add<Mpz> for &'a Mpz {
     fn add(self, rhs: Mpz) -> Mpz {
         let mut result = BICYCL::Mpz::new().within_box();
         BICYCL::Mpz::add(result.as_mut(), &*self.mpz, &*rhs.mpz);
+        Mpz {
+            mpz: result
+        }
+    }
+}
+
+impl Sub for Mpz {
+    type Output = Mpz;
+
+    fn sub(self, rhs: Mpz) -> Mpz {
+        let mut result = BICYCL::Mpz::new().within_box();
+        BICYCL::Mpz::sub(result.as_mut(), &*self.mpz, &*rhs.mpz);
+        Mpz {
+            mpz: result
+        }
+    }
+}
+
+impl<'a> Sub<&'a Mpz> for &'a Mpz {
+    type Output = Mpz;
+
+    fn sub(self, rhs: &'a Mpz) -> Mpz {
+        let mut result = BICYCL::Mpz::new().within_box();
+        BICYCL::Mpz::sub(result.as_mut(), &*self.mpz, &*rhs.mpz);
         Mpz {
             mpz: result
         }
