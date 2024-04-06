@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
+#![allow(unused_imports)]
 
 use std::fmt::{Debug, Formatter};
 use std::iter::Sum;
@@ -317,6 +318,12 @@ impl RandGen {
             mpz: self.rand_gen.as_mut().random_mpz(&*m.mpz).within_box()
         }
     }
+}
+
+unsafe impl Send for RandGen {
+}
+
+unsafe impl Sync for RandGen {
 }
 
 pub struct QFI {

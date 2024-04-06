@@ -51,8 +51,6 @@ pub struct CurvePolynomial {
 }
 
 impl CurvePolynomial {
-    // trivial constructor makes very little sense.
-    // should refactor to take a BTreeMap<Id, G> instead
     pub fn new(degree: Id, some_coeffs: &BTreeMap<Id, G>) -> Self {
         let mut coeffs = vec![G::zero(); degree as usize + 1];
         some_coeffs

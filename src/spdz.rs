@@ -342,8 +342,7 @@ pub struct PresignResult {
     pub R_contributions: BTreeMap<Id, G>,
 }
 
-/// Note: there are quite a few temporaries so we refrain from splitting
-///  the presigning and signing protocols into separate functions.
+
 pub async fn presign_protocol<M>(
     party: M,
     my_id: Id, // in the range 1..=n, subtract one before use
@@ -360,6 +359,9 @@ where
     let mut rng = RandGen::new();
     rng.set_seed(&Mpz::from(&Zq::random()));
 
+    let mut rng2 = RandGen::new();
+    rng2.set_seed(&Mpz::from(&Zq::random()));
+
     // boilerplate
     let MpcParty { delivery, .. } = party.into_party();
     let (incoming, mut outgoing) = delivery.split();
@@ -373,8 +375,10 @@ where
     let mut rounds = rounds.listen(incoming);
 
     // Round 1 interaction
-    let my_k_pvss = PvssMsg::random(pp, &mut rng, mac_base);
-    let my_phi_pvss = PvssMsg::random(pp, &mut rng, mac_base);
+    let (my_k_pvss, my_phi_pvss) = rayon::join(
+        || PvssMsg::random(pp, &mut rng, mac_base),
+        || PvssMsg::random(pp, &mut rng2, mac_base),
+    );
 
     outgoing
         .send(Outgoing::broadcast(PresignMsg::DuoPvss(DuoPvssMsg {
@@ -428,12 +432,10 @@ where
     // Round 1 processing
     let Phi = phi_pvss_result.curve_polynomial.coeffs[0].clone();
 
-    let ki = k_pvss_result
-        .shares_ciphertext
-        .decrypt_mine(&pp.cl, my_id, my_cl_sk);
-    let phi_i = phi_pvss_result
-        .shares_ciphertext
-        .decrypt_mine(&pp.cl, my_id, my_cl_sk);
+    let (ki, phi_i) = rayon::join(
+        || k_pvss_result.shares_ciphertext.decrypt_mine(&pp.cl, my_id, my_cl_sk),
+        || phi_pvss_result.shares_ciphertext.decrypt_mine(&pp.cl, my_id, my_cl_sk),
+    );
 
     let Ri = G::generator() * &ki;
     let dleq_proof = DleqNizk::prove(
@@ -448,7 +450,7 @@ where
         proof: dleq_proof,
     };
 
-    let (my_kphi_mta, my_betas) = MtaMsg::new(
+    let ((my_kphi_mta, my_betas), (my_xphi_mta, my_nus)) = rayon::join(|| MtaMsg::new(
         pp,
         my_id,
         &mut rng,
@@ -456,16 +458,16 @@ where
         &ki,
         mac_base,
         mac_base,
-    );
-    let (my_xphi_mta, my_nus) = MtaMsg::new(
+    ), 
+    || MtaMsg::new(
         pp,
         my_id,
-        &mut rng,
+        &mut rng2,
         &phi_pvss_result,
         my_x_share,
         mac_base,
         &G::generator(),
-    );
+    ));
 
     // Round 2 interaction
     outgoing
