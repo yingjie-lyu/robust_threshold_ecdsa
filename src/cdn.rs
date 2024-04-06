@@ -10,7 +10,7 @@ use curv::{
 };
 use futures::SinkExt;
 use itertools::Itertools;
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -435,11 +435,11 @@ impl ClassGroup3DleqNizk {
     ) -> Self {
         let u = rng.random_mpz(&pp.cl.encrypt_randomness_bound());
 
-        let U1 = gen1.exp(&pp.cl, &u);
-        let U2 = gen2.exp(&pp.cl, &u);
-        let U3 = gen3.exp(&pp.cl, &u);
+        let U: Vec<_> = [gen1, gen2, gen3].par_iter().map(|gen| {
+            gen.exp(&pp.cl, &u)
+        }).collect();
 
-        let e = Self::challenge(gen1, pow1, gen2, pow2, gen3, pow3, &U1, &U2, &U3);
+        let e = Self::challenge(gen1, pow1, gen2, pow2, gen3, pow3, &U[0], &U[1], &U[2]);
         let z = &u + e.clone() * x;
 
         Self { e, z }
@@ -859,16 +859,22 @@ where
     let mut rounds = rounds.listen(incoming);
 
     let w_ct = {
-        let c1 = presignature
-            .phi_ct
-            .c1()
-            .exp(&pp.cl, &Mpz::from(&message_hash))
-            .compose(&pp.cl, &presignature.rxphi_ct.c1());
-        let c2 = presignature
-            .phi_ct
-            .c2()
-            .exp(&pp.cl, &Mpz::from(&message_hash))
-            .compose(&pp.cl, &presignature.rxphi_ct.c2());
+        let (c1, c2) = rayon::join(
+            || {
+                presignature
+                    .phi_ct
+                    .c1()
+                    .exp(&pp.cl, &Mpz::from(&message_hash))
+                    .compose(&pp.cl, &presignature.rxphi_ct.c1())
+            },
+            || {
+                presignature
+                    .phi_ct
+                    .c2()
+                    .exp(&pp.cl, &Mpz::from(&message_hash))
+                    .compose(&pp.cl, &presignature.rxphi_ct.c2())
+            },
+        );
         CipherText::new(&c1, &c2)
     };
 
@@ -939,24 +945,28 @@ where
         .lagrange_coeffs_times_n_factorial(filtered_online_sign_messages.keys().cloned().collect())
         .unwrap();
 
+    
     let w_denominator = filtered_online_sign_messages
         .iter()
         .take(pp.t as usize)
+        .par_bridge()
         .map(|(i, msg)| msg.Ui.exp(&pp.cl, &lagrange_coeffs_times_n_factorial[i]))
-        .reduce(|acc, ui| acc.compose(&pp.cl, &ui))
-        .unwrap();
+        .reduce(|| pp.cl.one(), |acc, qf| acc.compose(&pp.cl, &qf));
+    
 
     let u_denominator = filtered_online_sign_messages
         .iter()
         .take(pp.t as usize)
+        .par_bridge()
         .map(|(i, msg)| msg.Wi.exp(&pp.cl, &lagrange_coeffs_times_n_factorial[i]))
-        .reduce(|acc, wi| acc.compose(&pp.cl, &wi))
-        .unwrap();
+        .reduce(|| pp.cl.one(), |acc, qf| acc.compose(&pp.cl, &qf));
 
-    let f_pow_w = w_nominator.compose(&pp.cl, &w_denominator.exp(&pp.cl, &Mpz::from(-1i64)));
     let f_pow_u = u_nominator.compose(&pp.cl, &u_denominator.exp(&pp.cl, &Mpz::from(-1i64)));
+    let f_pow_w = w_nominator.compose(&pp.cl, &w_denominator.exp(&pp.cl, &Mpz::from(-1i64)));
+    
     let w = pp.cl.dlog_in_F(&f_pow_w);
     let u = pp.cl.dlog_in_F(&f_pow_u);
+    
 
     let r = presignature.r.clone();
     let s = Zq::from(BigInt::from_bytes(&w.to_bytes()))
