@@ -601,6 +601,30 @@ impl ThresholdCLPubParams {
                 .sum(),
         )
     }
+
+    pub fn interpolate_for_cl(
+        &self,
+        ciphertexts: &BTreeMap<Id, CipherText>,
+    ) -> Option<CipherText> {
+        let lagrange_coeffs = self.lagrange_coeffs(ciphertexts.keys().cloned().collect())?;
+        Some(
+            ciphertexts
+                .iter()
+                .map(|(i, ciphertext)| {
+                    CipherText::new(
+                        &ciphertext.c1().exp(&self.cl, &Mpz::from(&lagrange_coeffs[i])),
+                        &ciphertext.c2().exp(&self.cl, &Mpz::from(&lagrange_coeffs[i])),
+                    )
+                })
+                .reduce(|acc, ct| {
+                    CipherText::new(
+                        &acc.c1().compose(&self.cl, &ct.c1()),
+                        &acc.c2().compose(&self.cl, &ct.c2()),
+                    )
+                })
+                .unwrap(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
