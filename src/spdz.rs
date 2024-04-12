@@ -596,7 +596,7 @@ pub async fn test_spdz_signing() {
     simulate_spdz_signing(3, 2).await;
 }
 
-pub async fn simulate_spdz_signing(n: Id, t: Id) {
+pub async fn simulate_spdz_signing(n: Id, t: Id) -> (u128, u128) {
     let (pp, secret_keys) = simulate_pp(n, t);
     let h = G::base_point2();
 
@@ -625,10 +625,10 @@ pub async fn simulate_spdz_signing(n: Id, t: Id) {
     }
 
     let output = futures::future::try_join_all(party_output).await.unwrap();
-    println!(
-        "Presign time per party: {:.4?}",
-        now.elapsed() / pp.n as u32
-    );
+    
+    let presign = now.elapsed();
+    let presign_time = presign.as_millis() / n as u128;
+
 
     let mut simulation = Simulation::<OnlineSignMsgEnum>::new();
     let mut party_output = vec![];
@@ -648,7 +648,12 @@ pub async fn simulate_spdz_signing(n: Id, t: Id) {
         party_output.push(result);
     }
     let _ = futures::future::try_join_all(party_output).await.unwrap();
-    println!("Total time per party: {:.4?}", now.elapsed() / pp.n as u32);
+
+    // how many miliseconds per party
+    let online = now.elapsed() - presign;
+    let online_time = online.as_micros() / n as u128;
+
+    (presign_time, online_time)
 }
 
 pub async fn online_sign_protocol<M>(
