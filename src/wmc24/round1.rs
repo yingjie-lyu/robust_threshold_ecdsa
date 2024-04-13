@@ -54,7 +54,7 @@ impl Round1 {
 
             k_ciphertexts.insert(i, each_party_k_ciphertexts);
 
-            //msgs.rotate_left(1);
+            msgs.rotate_left(1);
         }
 
         Self { k_ciphertexts }
@@ -73,29 +73,29 @@ mod tests {
         let mut k_cipers = Vec::with_capacity(pp.n as usize);
         for (key, value) in &msg.k_ciphertexts {
             println!("{:?}", value.keys());
-            // let mut each_party_k_cipers = BTreeMap::new();
-            // for (id, cipher) in value {
-            //     each_party_k_cipers.insert(
-            //         *id,
-            //         CipherText::new(
-            //             &cipher.c1().exp(&pp.cl, &secrect_keys[id].mpz()),
-            //             &cipher.c2(),
-            //         ),
-            //     );
-            // }
-            // k_cipers.push(pp.interpolate_for_cl(&each_party_k_cipers).unwrap());
-            let k_ciphertext = value
-                .values()
-                .take(pp.t as usize)
-                .cloned()
-                .reduce(|acc, ct| {
+            let mut each_party_k_cipers = BTreeMap::new();
+            for (id, cipher) in value {
+                each_party_k_cipers.insert(
+                    *id,
                     CipherText::new(
-                        &acc.c1().compose(&pp.cl, &ct.c1()),
-                        &acc.c2().compose(&pp.cl, &ct.c2()),
-                    )
-                })
-                .unwrap();
-            k_cipers.push(k_ciphertext);
+                        &cipher.c1().exp(&pp.cl, &secrect_keys[id].mpz()),
+                        &cipher.c2(),
+                    ),
+                );
+            }
+            k_cipers.push(pp.interpolate_for_cl(&each_party_k_cipers).unwrap());
+            // let k_ciphertext = value
+            //     .values()
+            //     .take(pp.t as usize)
+            //     .cloned()
+            //     .reduce(|acc, ct| {
+            //         CipherText::new(
+            //             &acc.c1().compose(&pp.cl, &ct.c1()),
+            //             &acc.c2().compose(&pp.cl, &ct.c2()),
+            //         )
+            //     })
+            //     .unwrap();
+            // k_cipers.push(k_ciphertext);
         }
 
         for (i, item) in k_cipers.clone().iter().enumerate() {
