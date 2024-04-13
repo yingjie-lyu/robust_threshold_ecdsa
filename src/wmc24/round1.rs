@@ -1,7 +1,3 @@
-use std::collections::BTreeMap;
-
-use itertools::Itertools;
-
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -37,6 +33,7 @@ impl Round1 {
             let ki_ciphertexts: Vec<_> = msgs
                 .iter()
                 .filter_map(|(j, ki_ciphertext, proof)| {
+                    //if proof.verify(pp, &pp.pk, ki_ciphertext) && *j != i {
                     if proof.verify(pp, &pp.pk, ki_ciphertext) {
                         Some((*j, ki_ciphertext.clone(), proof.clone()))
                     } else {
@@ -44,12 +41,13 @@ impl Round1 {
                     }
                 })
                 .collect();
-            
-            each_party_k_ciphertexts.insert(i, per_cipher.get(&i).unwrap().clone());
+
+            //each_party_k_ciphertexts.insert(i, per_cipher.get(&i).unwrap().clone());
 
             ki_ciphertexts
                 .into_iter()
-                .take(pp.t as usize)
+                //.take((pp.t - 1) as usize)
+                .take((pp.t) as usize)
                 .for_each(|(j, ki_ciphertext, _)| {
                     each_party_k_ciphertexts.insert(j, ki_ciphertext);
                 });
@@ -69,14 +67,42 @@ mod tests {
 
     #[test]
     fn test_round1() {
-        let (pp, _) = ThresholdCLPubParams::simulate(3, 2);
+        let (pp, secrect_keys) = ThresholdCLPubParams::simulate(3, 2);
         let mut rng = RandGen::new();
         let msg = Round1::new(&pp, &mut rng);
         let mut k_cipers = Vec::with_capacity(pp.n as usize);
         for (key, value) in &msg.k_ciphertexts {
             println!("{:?}", value.keys());
-            k_cipers.push(pp.interpolate_for_cl(value).unwrap());
+            // let mut each_party_k_cipers = BTreeMap::new();
+            // for (id, cipher) in value {
+            //     each_party_k_cipers.insert(
+            //         *id,
+            //         CipherText::new(
+            //             &cipher.c1().exp(&pp.cl, &secrect_keys[id].mpz()),
+            //             &cipher.c2(),
+            //         ),
+            //     );
+            // }
+            // k_cipers.push(pp.interpolate_for_cl(&each_party_k_cipers).unwrap());
+            let k_ciphertext = value
+                .values()
+                .take(pp.t as usize)
+                .cloned()
+                .reduce(|acc, ct| {
+                    CipherText::new(
+                        &acc.c1().compose(&pp.cl, &ct.c1()),
+                        &acc.c2().compose(&pp.cl, &ct.c2()),
+                    )
+                })
+                .unwrap();
+            k_cipers.push(k_ciphertext);
         }
-        assert_eq!(k_cipers[0].c2(), k_cipers[1].c2());
+
+        for (i, item) in k_cipers.clone().iter().enumerate() {
+            if i != 0 {
+                assert_eq!(k_cipers[i - 1].c1(), k_cipers[i].c1());
+                assert_eq!(k_cipers[i - 1].c2(), k_cipers[i].c2());
+            }
+        }
     }
 }
