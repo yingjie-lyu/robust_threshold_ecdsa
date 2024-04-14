@@ -13,13 +13,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     let n = 3;
     let t = 2;
 
-    // group.bench_function("Benchmarking CDN", |b| {
-    //     b.iter(|| {
-    //         rt.block_on(async {
-    //             cdn::simulate_cdn_signing(n, t).await;
-    //         });
-    //     })
-    // });
+    group.bench_function("Benchmarking CDN", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                cdn::simulate_cdn_signing(n, t).await;
+            });
+        })
+    });
 
     group.bench_function("Benchmarking WMC24", |b| {
         b.iter(|| {

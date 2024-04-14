@@ -54,7 +54,7 @@ impl Round1 {
 
             k_ciphertexts.insert(i, each_party_k_ciphertexts);
 
-            msgs.rotate_left(1);
+            //msgs.rotate_left(1);
         }
 
         Self { k_ciphertexts }

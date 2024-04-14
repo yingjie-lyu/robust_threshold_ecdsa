@@ -5,6 +5,8 @@ pub struct Round2 {
     pub ggama_ciphertexts: BTreeMap<u8, BTreeMap<u8, ElGamalCiphertext>>,
     pub xk_ciphertexts: BTreeMap<u8, BTreeMap<u8, CipherText>>,
     pub gammak_ciphertexts: BTreeMap<u8, BTreeMap<u8, CipherText>>,
+
+    pub k_ciphertexts: BTreeMap<u8, CipherText>,
 }
 
 impl Round2 {
@@ -16,6 +18,8 @@ impl Round2 {
         rng: &mut RandGen,
     ) -> Self {
         let mut msgs = Vec::with_capacity(pp.n as usize);
+
+        let mut k_ciphertexts = BTreeMap::new();
 
         for (id, map) in round1.k_ciphertexts.clone() {
             let k_ciphertext = map
@@ -29,6 +33,8 @@ impl Round2 {
                     )
                 })
                 .unwrap();
+
+            k_ciphertexts.insert(id, k_ciphertext.clone());
 
             let xi_k_ciphertext = CipherText::new(
                 &k_ciphertext.c1().exp(&pp.cl, &Mpz::from(&x_shares[&id])),
@@ -93,10 +99,10 @@ impl Round2 {
             ggama_ciphertexts,
             xk_ciphertexts,
             gammak_ciphertexts,
+            k_ciphertexts,
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -104,8 +110,8 @@ mod tests {
 
     #[test]
     fn test_round2() {
-        let n=3;
-        let t=2;
+        let n = 3;
+        let t = 2;
         let (pp, secrect_keys) = ThresholdCLPubParams::simulate(n, t);
         let (threshold_pk, x_shares, x) = ThresholdPubKey::simulate(n, t);
         let mut rng = RandGen::new();
@@ -150,7 +156,6 @@ mod tests {
         }
 
         for (key, value) in &round2_msg.gammak_ciphertexts {
-
             let gammak_ciphertext = value
                 .values()
                 .take(pp.t as usize)
