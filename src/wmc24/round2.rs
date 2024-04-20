@@ -15,7 +15,7 @@ impl Round2 {
         threshold_pk: &ThresholdPubKey,
         x_shares: &BTreeMap<Id, Zq>,
         round1: &Round1,
-        rng: &mut RandGen,
+        mut rng: &mut RandGen,
     ) -> Self {
         let mut msgs = Vec::with_capacity(pp.n as usize);
 
@@ -41,6 +41,16 @@ impl Round2 {
                 &k_ciphertext.c2().exp(&pp.cl, &Mpz::from(&x_shares[&id])),
             );
 
+            let cldl_proof = CLDLProof::prove(
+                &pp,
+                &mut rng,
+                &xi_k_ciphertext,
+                &k_ciphertext,
+                &threshold_pk.pub_shares[&id],
+                &G::generator(),
+                &x_shares[&id],
+            );
+
             let gammai = Zq::random();
             let (ggamai_ciphertext, eg_rand) = ElGamalCiphertext::new(&gammai, &threshold_pk.pk);
 
@@ -48,7 +58,14 @@ impl Round2 {
                 &k_ciphertext.c1().exp(&pp.cl, &Mpz::from(&gammai)),
                 &k_ciphertext.c2().exp(&pp.cl, &Mpz::from(&gammai)),
             );
-            msgs.push((id, ggamai_ciphertext, xi_k_ciphertext, gammaik_ciphertext));
+            msgs.push((
+                id,
+                ggamai_ciphertext,
+                xi_k_ciphertext,
+                gammaik_ciphertext,
+                k_ciphertext,
+                cldl_proof,
+            ));
         }
 
         let mut ggama_ciphertexts = BTreeMap::new();
@@ -63,9 +80,23 @@ impl Round2 {
             let filter_verify_proof_msgs: Vec<_> = msgs
                 .iter()
                 .filter_map(
-                    |(j, ggamai_ciphertext, xi_k_ciphertext, gammaik_ciphertext)| {
+                    |(
+                        j,
+                        ggamai_ciphertext,
+                        xi_k_ciphertext,
+                        gammaik_ciphertext,
+                        k_ciphertext,
+                        cldl_proof,
+                    )| {
                         //if proof.verify(pp, &pp.pk, ki_ciphertext) && *j != i {
-                        if true {
+                        if cldl_proof.verify(
+                            &pp,
+                            &mut rng,
+                            xi_k_ciphertext,
+                            k_ciphertext,
+                            &threshold_pk.pub_shares[&j],
+                            &G::generator(),
+                        ) {
                             Some((
                                 *j,
                                 ggamai_ciphertext.clone(),
@@ -78,7 +109,7 @@ impl Round2 {
                     },
                 )
                 .collect();
-
+            assert_eq!(filter_verify_proof_msgs.len(), pp.n as usize);
             filter_verify_proof_msgs
                 .into_iter()
                 //.take((pp.t - 1) as usize)
