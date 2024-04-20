@@ -58,6 +58,17 @@ impl Round2 {
                 &k_ciphertext.c1().exp(&pp.cl, &Mpz::from(&gammai)),
                 &k_ciphertext.c2().exp(&pp.cl, &Mpz::from(&gammai)),
             );
+            let clel_proof = CLELProof::prove(
+                &pp,
+                &mut rng,
+                &threshold_pk,
+                &gammaik_ciphertext,
+                &k_ciphertext,
+                &ggamai_ciphertext,
+                &G::generator(),
+                &gammai,
+                &eg_rand,
+            );
             msgs.push((
                 id,
                 ggamai_ciphertext,
@@ -65,6 +76,7 @@ impl Round2 {
                 gammaik_ciphertext,
                 k_ciphertext,
                 cldl_proof,
+                clel_proof,
             ));
         }
 
@@ -87,6 +99,7 @@ impl Round2 {
                         gammaik_ciphertext,
                         k_ciphertext,
                         cldl_proof,
+                        clel_proof,
                     )| {
                         //if proof.verify(pp, &pp.pk, ki_ciphertext) && *j != i {
                         if cldl_proof.verify(
@@ -95,6 +108,14 @@ impl Round2 {
                             xi_k_ciphertext,
                             k_ciphertext,
                             &threshold_pk.pub_shares[&j],
+                            &G::generator(),
+                        ) && clel_proof.verify(
+                            &pp,
+                            &mut rng,
+                            &threshold_pk,
+                            gammaik_ciphertext,
+                            k_ciphertext,
+                            ggamai_ciphertext,
                             &G::generator(),
                         ) {
                             Some((

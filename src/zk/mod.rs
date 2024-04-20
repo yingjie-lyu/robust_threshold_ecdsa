@@ -15,3 +15,5 @@ pub mod clenc_nizk;
 pub use clenc_nizk::*;
 pub mod cldl_nizk;
 pub use cldl_nizk::*;
+pub mod clel_nizk;
+pub use clel_nizk::*;
