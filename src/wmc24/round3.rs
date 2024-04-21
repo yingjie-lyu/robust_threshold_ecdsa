@@ -17,7 +17,7 @@ impl Round3 {
         secret_keys: &BTreeMap<Id, SecretKey>,
         x_shares: &BTreeMap<Id, Zq>,
         round2: &Round2,
-        rng: &mut RandGen,
+        mut rng: &mut RandGen,
     ) -> Self {
         let mut msgs = Vec::with_capacity(pp.n as usize);
         let mut ggama_ciphertexts = BTreeMap::new();
@@ -40,7 +40,7 @@ impl Round3 {
 
             ggama_ciphertexts.insert(i, ggama_ciphertext.clone());
 
-            let pd_ggamma = ggama_ciphertext.c1 * x_shares.get(&i).unwrap();
+            let pd_ggamma = ggama_ciphertext.c1.clone() * x_shares.get(&i).unwrap();
 
             let gammak_ciphertext = round2
                 .gammak_ciphertexts
@@ -61,7 +61,26 @@ impl Round3 {
 
             let pd_gammak = gammak_ciphertext.c1().exp(&pp.cl, &secret_keys[&i].mpz());
 
-            msgs.push((i, pd_ggamma, pd_gammak));
+            let pd_proof = PDProof::prove(
+                &pp,
+                &mut rng,
+                &threshold_pk,
+                &pd_gammak,
+                &gammak_ciphertext.c1(),
+                &pd_ggamma,
+                &ggama_ciphertext.c1,
+                &secret_keys[&i].mpz(),
+                &x_shares[&i],
+            );
+
+            msgs.push((
+                i,
+                pd_ggamma,
+                pd_gammak,
+                gammak_ciphertext.c1(),
+                ggama_ciphertext.c1.clone(),
+                pd_proof,
+            ));
 
             let xk_ciphertext = pp
                 .interpolate_for_cl(
@@ -85,16 +104,16 @@ impl Round3 {
             let mut each_party_pd_gammak = BTreeMap::new();
             let filter_verify_proof_msgs: Vec<_> = msgs
                 .iter()
-                .filter_map(|(j, pd_ggamma, pd_gammak)| {
+                .filter_map(|(j, pow2, pow1, gen1, gen2, proof)| {
                     //if proof.verify(pp, &pp.pk, ki_ciphertext) && *j != i {
-                    if true {
-                        Some((*j, pd_ggamma.clone(), pd_gammak.clone()))
+                    if proof.verify(&pp, &mut rng, &threshold_pk, pow1, gen1, pow2, gen2) {
+                        Some((*j, pow2.clone(), pow1.clone()))
                     } else {
                         None
                     }
                 })
                 .collect();
-
+            assert_eq!(filter_verify_proof_msgs.len(), pp.n as usize);
             filter_verify_proof_msgs
                 .into_iter()
                 //.take((pp.t - 1) as usize)

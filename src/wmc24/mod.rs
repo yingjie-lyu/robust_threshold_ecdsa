@@ -153,7 +153,7 @@ impl WMC24 {
         x_shares: &BTreeMap<Id, Zq>,
         offine_msg: &Offine,
         message_hash: &Zq,
-        rng: &mut RandGen,
+        mut rng: &mut RandGen,
     ) -> ECDSASignature {
         let mut rcoords = BTreeMap::new();
         let mut mk_plus_rxk_ciphertexts = BTreeMap::new();
@@ -185,7 +185,24 @@ impl WMC24 {
             let pd_mk_plus_rxk_ciphertext = mk_plus_rxk_ciphertext
                 .c1()
                 .exp(&pp.cl, &secret_keys[&i].mpz());
-            pd_mk_plus_rxk_ciphertexts.insert(i, pd_mk_plus_rxk_ciphertext);
+
+            let proof = PDCLProof::prove(
+                &pp,
+                &mut rng,
+                &threshold_pk,
+                &pd_mk_plus_rxk_ciphertext,
+                &mk_plus_rxk_ciphertext.c1(),
+                &secret_keys[&i].mpz(),
+            );
+
+            pd_mk_plus_rxk_ciphertexts.insert(
+                i,
+                (
+                    pd_mk_plus_rxk_ciphertext,
+                    mk_plus_rxk_ciphertext.c1(),
+                    proof,
+                ),
+            );
 
             if i != 1 {
                 assert_eq!(rcoords.get(&i).unwrap(), rcoords.get(&(i - 1)).unwrap());
@@ -200,8 +217,19 @@ impl WMC24 {
                 .c2()
                 .exp(&pp.cl, &pp.n_factorial.pow(3));
 
-            let filtered_pd_mk_plus_rxk = pd_mk_plus_rxk_ciphertexts
-                .clone()
+            let mut each_party_pd_mk_plus_rxk_ciphertexts = BTreeMap::new();
+
+            pd_mk_plus_rxk_ciphertexts
+                .iter()
+                .for_each(|(j, (pow1, gen1, proof))| {
+                    if proof.verify(&pp, &mut rng, &threshold_pk, &pow1, &gen1) {
+                        each_party_pd_mk_plus_rxk_ciphertexts.insert(*j, pow1.clone());
+                    }
+                });
+
+            assert_eq!(each_party_pd_mk_plus_rxk_ciphertexts.len(), pp.n as usize);
+
+            let filtered_pd_mk_plus_rxk = each_party_pd_mk_plus_rxk_ciphertexts
                 .into_iter()
                 .take(pp.t as usize)
                 .collect::<BTreeMap<_, _>>();
