@@ -9,14 +9,14 @@ name = "bicycl"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-autocxx = "0.26.0"
+autocxx = "0.27"
 cxx = "1.0"
-chrono = "0.4.33"
-serde = {}
+chrono = "0.4"
+serde = "1.0"
 #tokio = { version = "1.15", features = ["full"] }
 curv-kzen = { version = "0.10", default-features = true }
 
 
 [build-dependencies]
-autocxx-build = "0.26.0"
+autocxx-build = "0.27"
 miette = { version = "5", features = ["fancy"] }

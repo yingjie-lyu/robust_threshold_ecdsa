@@ -5,26 +5,26 @@ edition = "2021"
 publish = false
 
 [dependencies]
-round-based = { version = "0.2", features = ["dev", "derive"] }
+round-based = { version = "0.3", features = ["dev", "derive"] }
 curv-kzen = { version = "0.10", default-features = true }
 ecdsa = "0.16.6"
-tokio = { version = "1.15", features = ["full"] }
+tokio = { version = "1.40", features = ["full"] }
 futures = "0.3"
 rand = "0.8"
-serde = { version = "1", features = ["derive"] }
-generic-array = { version = "0.14", features = ["serde"] }
-thiserror = "1"
-sha2 = "0.10.6"
+serde = { version = "1.0", features = ["derive"] }
+generic-array = { version = "1.1", features = ["serde"] }
+thiserror = "1.0"
+sha2 = "0.10"
 bicycl = { path = "./bicycl"}
-chrono = "0.4.33"
-rayon = "1.9"
-itertools = "0.12"
+chrono = "0.4"
+rayon = "1.10"
+itertools = "0.13"
 
 [profile.release]
 debug = true
 
 [dev-dependencies]
-criterion = { version = "0.4", features = ["html_reports"] }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "bench"
