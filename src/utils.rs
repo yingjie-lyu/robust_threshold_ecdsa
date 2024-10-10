@@ -127,7 +127,7 @@ impl CLMultiRecvCiphertext {
             .par_iter()
             .map(|(id, m)| {
                 let f_pow_m = cl.power_of_f(&Mpz::from(m));
-                let pk_pow_r = keyring[id].exponentiation(cl, &r);
+                let pk_pow_r = keyring[id].exp(cl, &r);
                 (*id, f_pow_m.compose(cl, &pk_pow_r))
             })
             .collect();

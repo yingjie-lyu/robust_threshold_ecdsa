@@ -643,7 +643,7 @@ impl PublicKey {
         self.elt().to_bytes()
     }
 
-    pub fn exponentiation(&self, c: &CL_HSMqk, n: &Mpz) -> QFI {
+    pub fn exp(&self, c: &CL_HSMqk, n: &Mpz) -> QFI {
         let mut r = BICYCL::QFI::new().within_box();
         self.pk.exponentiation(&*c.c, r.as_mut(), &*n.mpz);
         QFI {

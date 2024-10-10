@@ -58,6 +58,8 @@ pub struct CLEGDoubleEncNizk {
     pub z3: Zq,
 }
 
+
+
 impl CLEGDoubleEncNizk {
     pub fn prove(
         pp: &ThresholdCLPubParams,
@@ -78,7 +80,7 @@ impl CLEGDoubleEncNizk {
         let U2 = pp
             .cl
             .power_of_f(&Mpz::from(&u2))
-            .compose(&pp.cl, &clpk.exponentiation(&pp.cl, &u1));
+            .compose(&pp.cl, &clpk.exp(&pp.cl, &u1));
         let U3 = G::generator() * &u3;
         let U4 = G::generator() * &u2 + ecpk * &u3;
 
@@ -105,7 +107,7 @@ impl CLEGDoubleEncNizk {
         let U2 = pp
             .cl
             .power_of_f(&Mpz::from(&self.z2))
-            .compose(&pp.cl, &clpk.exponentiation(&pp.cl, &self.z1))
+            .compose(&pp.cl, &clpk.exp(&pp.cl, &self.z1))
             .compose(&pp.cl, &clct.c2().exp(&pp.cl, &-Mpz::from(&self.e)));
         let U3 = G::generator() * &self.z3 - &egct.c1 * &self.e;
         let U4 = G::generator() * &self.z2 + ecpk * &self.z3 - &egct.c2 * &self.e;
@@ -160,7 +162,7 @@ impl NonceProposalMsg {
         let c2 = pp
             .cl
             .power_of_f(&Mpz::from(&ki))
-            .compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &cl_rand));
+            .compose(&pp.cl, &pp.pk.exp(&pp.cl, &cl_rand));
         let ki_ciphertext = CipherText::new(&c1, &c2);
         let (Ri_ciphertext, eg_rand) = ElGamalCiphertext::new(&ki, ecpk);
 
@@ -217,7 +219,7 @@ impl CLScal2Nizk {
         let U2 = pp
             .cl
             .power_of_f(&Mpz::from(&u2))
-            .compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &u1));
+            .compose(&pp.cl, &pp.pk.exp(&pp.cl, &u1));
         let U3 = base * &u2;
         let U4 = orig_ct1.c1().exp(&pp.cl, &Mpz::from(&u2));
         let U5 = orig_ct1.c2().exp(&pp.cl, &Mpz::from(&u2));
@@ -252,7 +254,7 @@ impl CLScal2Nizk {
         let U2 = pp
             .cl
             .power_of_f(&self.z2)
-            .compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &self.z1))
+            .compose(&pp.cl, &pp.pk.exp(&pp.cl, &self.z1))
             .compose(&pp.cl, &scalar_ct.c2().exp(&pp.cl, &-Mpz::from(&self.e)));
         let z2_modq = Zq::from(BigInt::from_bytes(&self.z2.to_bytes()) % Zq::group_order());
         let U3 = base * z2_modq - scalar_pub * &self.e;
@@ -357,7 +359,7 @@ impl NonceExtractMaskMsg {
             &pp.cl.power_of_h(&cl_rand),
             &pp.cl
                 .power_of_f(&Mpz::from(&phi_i))
-                .compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &cl_rand)),
+                .compose(&pp.cl, &pp.pk.exp(&pp.cl, &cl_rand)),
         );
 
         let kphi_i_ciphertext = k_ciphertext.scal(&pp.cl, &Mpz::from(&phi_i));
@@ -1017,7 +1019,7 @@ pub async fn simulate_cdn_signing(n: Id, t: Id) {
         &pp.cl.power_of_h(&r),
         &pp.cl
             .power_of_f(&Mpz::from(&x))
-            .compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &r)),
+            .compose(&pp.cl, &pp.pk.exp(&pp.cl, &r)),
     );
 
     let mut simulation = Simulation::<PresignMsg>::new();

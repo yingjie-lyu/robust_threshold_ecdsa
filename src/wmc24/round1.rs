@@ -19,7 +19,7 @@ impl Round1 {
             let c2 = pp
                 .cl
                 .power_of_f(&Mpz::from(&ki))
-                .compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &cl_rand));
+                .compose(&pp.cl, &pp.pk.exp(&pp.cl, &cl_rand));
             let ki_ciphertext = CipherText::new(&c1, &c2);
             let proof = CLEncProof::prove(&pp, rng, &pp.pk, &ki_ciphertext, &ki, &cl_rand);
             msgs.push((i, ki_ciphertext.clone(), proof));

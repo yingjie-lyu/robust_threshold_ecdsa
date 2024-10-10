@@ -23,7 +23,7 @@ impl CLEncProof {
         let U2 = pp
             .cl
             .power_of_f(&Mpz::from(&u2))
-            .compose(&pp.cl, &clpk.exponentiation(&pp.cl, &u1));
+            .compose(&pp.cl, &clpk.exp(&pp.cl, &u1));
 
         let e = Self::challenge(clpk, clct, &U1, &U2);
         let z1 = &u1 + Mpz::from(&e) * cl_rand;
@@ -40,7 +40,7 @@ impl CLEncProof {
         let U2 = pp
             .cl
             .power_of_f(&Mpz::from(&self.z2))
-            .compose(&pp.cl, &clpk.exponentiation(&pp.cl, &self.z1))
+            .compose(&pp.cl, &clpk.exp(&pp.cl, &self.z1))
             .compose(&pp.cl, &clct.c2().exp(&pp.cl, &-Mpz::from(&self.e)));
 
         let e = Self::challenge(clpk, clct, &U1, &U2);
@@ -78,7 +78,7 @@ mod tests {
         let c2 = pp
             .cl
             .power_of_f(&Mpz::from(&ki))
-            .compose(&pp.cl, &pp.pk.exponentiation(&pp.cl, &cl_rand));
+            .compose(&pp.cl, &pp.pk.exp(&pp.cl, &cl_rand));
 
         let ki_ciphertext = CipherText::new(&c1, &c2);
         rng.set_seed(&Mpz::from(&Zq::random()));
