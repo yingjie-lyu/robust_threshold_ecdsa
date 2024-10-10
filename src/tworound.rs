@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ScalarL1heCiphertext {
+pub struct L1heCiphertextWithProof {
     pub point: G,
     pub masked: Zq,
     pub mask_cl_ciphertext: CipherText,
@@ -114,7 +114,7 @@ impl ClDlNizk {
     }
 }
 
-impl ScalarL1heCiphertext {
+impl L1heCiphertextWithProof {
     pub fn random(pp: &ThresholdCLPubParams, rng: &mut RandGen) -> Self {
         let scalar = Zq::random();
         let point = G::generator() * &scalar;
@@ -155,29 +155,151 @@ impl ScalarL1heCiphertext {
         )
     }
 
+    pub fn add(&self, other: &Self, pp: &ThresholdCLPubParams) -> Self {
+        Self {
+            point: &self.point + &other.point,
+            masked: &self.masked + &other.masked,
+            mask_cl_ciphertext: CipherText::new(
+                &self
+                    .mask_cl_ciphertext
+                    .c1()
+                    .compose(&pp.cl, &other.mask_cl_ciphertext.c1()),
+                &self
+                    .mask_cl_ciphertext
+                    .c2()
+                    .compose(&pp.cl, &other.mask_cl_ciphertext.c2()),
+            ),
+            consistency_proof: ClDlNizk {
+                challenge: Zq::zero(),
+                z1: Mpz::from(0u64),
+                z2: Zq::zero(),
+            }, // dummy field, should not be used further
+        }
+    }
+
+    // todo: adding a const. may need a thinned ciphertext type, without point, consistency_proof fields
+
     pub fn aggregate(ciphertexts: &[Self], pp: &ThresholdCLPubParams) -> Self {
         ciphertexts
             .into_iter()
             .cloned()
-            .reduce(|a, b| Self {
-                point: a.point + b.point,
-                masked: &a.masked + &b.masked,
-                mask_cl_ciphertext: CipherText::new(
-                    &a.mask_cl_ciphertext
-                        .c1()
-                        .compose(&pp.cl, &b.mask_cl_ciphertext.c1()),
-                    &a.mask_cl_ciphertext
-                        .c2()
-                        .compose(&pp.cl, &b.mask_cl_ciphertext.c2()),
-                ),
-                consistency_proof: ClDlNizk {
-                    challenge: Zq::zero(),
-                    z1: Mpz::from(0u64),
-                    z2: Zq::zero(),
-                },   // dummy field, should not be used further
-            })
+            .reduce(|a, b| a.add(&b, pp))
             .unwrap()
+    }
+
+    pub fn scale(&self, scalar: &Zq, pp: &ThresholdCLPubParams) -> Self {
+        Self {
+            point: &self.point * scalar,
+            masked: &self.masked * scalar,
+            mask_cl_ciphertext: CipherText::new(
+                &self.mask_cl_ciphertext.c1().exp(&pp.cl, &Mpz::from(scalar)),
+                &self.mask_cl_ciphertext.c2().exp(&pp.cl, &Mpz::from(scalar)),
+            ),
+            consistency_proof: self.consistency_proof.clone(), // dummy field, should not be used further
+        }
+    }
+
+    pub fn multiply(&self, other: &Self, pp: &ThresholdCLPubParams) -> Level2Ciphertext {
+        let ct1_left = self
+            .mask_cl_ciphertext
+            .c1()
+            .exp(&pp.cl, &Mpz::from(&other.masked))
+            .compose(
+                &pp.cl,
+                &other
+                    .mask_cl_ciphertext
+                    .c1()
+                    .exp(&pp.cl, &Mpz::from(&self.masked)),
+            );
+
+        let ct1_right = self
+            .mask_cl_ciphertext
+            .c2()
+            .exp(&pp.cl, &Mpz::from(&other.masked))
+            .compose(
+                &pp.cl,
+                &other
+                    .mask_cl_ciphertext
+                    .c2()
+                    .exp(&pp.cl, &Mpz::from(&self.masked)),
+            )
+            .compose(
+                &pp.cl,
+                &pp.cl.power_of_f(&Mpz::from(&self.masked * &other.masked)),
+            );
+
+        Level2Ciphertext {
+            clct1: CipherText::new(&ct1_left, &ct1_right),
+            clct2: self.mask_cl_ciphertext.clone(),
+            clct3: other.mask_cl_ciphertext.clone(),
+        }
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Level2Ciphertext {
+    clct1: CipherText,
+    clct2: CipherText,
+    clct3: CipherText,
+}
+
+impl Level2Ciphertext {
+    pub fn rerandomize(
+        &self,
+        ciphertext_prim: &CipherText,
+        hash1: Zq,
+        hash2: Zq,
+        pp: &ThresholdCLPubParams,
+    ) -> Self {
+        let clct1_left = self
+            .clct1
+            .c1()
+            .compose(
+                &pp.cl,
+                &ciphertext_prim
+                    .c1()
+                    .exp(&pp.cl, &Mpz::from(-&hash1 * &hash2)),
+            )
+            .compose(&pp.cl, &self.clct2.c1().exp(&pp.cl, &Mpz::from(-&hash2)))
+            .compose(&pp.cl, &self.clct3.c1().exp(&pp.cl, &Mpz::from(-&hash1)));
+
+        let clct1_right = self
+            .clct1
+            .c2()
+            .compose(
+                &pp.cl,
+                &ciphertext_prim
+                    .c2()
+                    .exp(&pp.cl, &Mpz::from(-&hash1 * &hash2)),
+            )
+            .compose(&pp.cl, &self.clct2.c2().exp(&pp.cl, &Mpz::from(-&hash2)))
+            .compose(&pp.cl, &self.clct3.c2().exp(&pp.cl, &Mpz::from(-&hash1)));
+
+        let clct2_left = self.clct2.c1().compose(
+            &pp.cl,
+            &ciphertext_prim.c1().exp(&pp.cl, &Mpz::from(&hash1)),
+        );
+
+        let clct2_right = self.clct2.c2().compose(
+            &pp.cl,
+            &ciphertext_prim.c2().exp(&pp.cl, &Mpz::from(&hash1)),
+        );
+
+        let clct3_left = self.clct3.c1().compose(
+            &pp.cl,
+            &ciphertext_prim.c1().exp(&pp.cl, &Mpz::from(&hash2)),
+        );
+
+        let clct3_right = self.clct3.c2().compose(
+            &pp.cl,
+            &ciphertext_prim.c2().exp(&pp.cl, &Mpz::from(&hash2)),
+        );
+
+        Self {
+            clct1: CipherText::new(&clct1_left, &clct1_right),
+            clct2: CipherText::new(&clct2_left, &clct2_right),
+            clct3: CipherText::new(&clct3_left, &clct3_right),
+        }
+    }
+}
 

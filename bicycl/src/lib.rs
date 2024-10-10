@@ -64,6 +64,12 @@ impl<'a> From<&'a Scalar<Secp256k1>> for Mpz {
     }
 }
 
+impl From<Scalar<Secp256k1>> for Mpz {
+    fn from(value: Scalar<Secp256k1>) -> Self {
+        Mpz::from(&value)
+    }
+}
+
 impl Neg for Mpz {
     type Output = Self;
 
